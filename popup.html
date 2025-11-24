@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Webpage Resource Downloader</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1 class="title">Resource Downloader</h1>
+                <div class="header-actions">
+                    <button id="scanBtn" class="btn btn-primary">
+                        <span class="btn-icon">🔍</span>
+                        Scan Page
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Status Section -->
+        <div id="statusSection" class="status-section">
+            <div id="statusMessage" class="status-message">
+                Click "Scan Page" to find downloadable resources
+            </div>
+            <div id="progressBar" class="progress-bar" style="display: none;">
+                <div class="progress-fill"></div>
+            </div>
+        </div>
+
+        <!-- Controls Section -->
+        <div id="controlsSection" class="controls-section" style="display: none;">
+            <div class="controls-row">
+                <div class="resource-count">
+                    <span id="resourceCount">0</span> resources found
+                </div>
+                <div class="selection-controls">
+                    <button id="selectAllBtn" class="btn btn-small">Select All</button>
+                    <button id="selectNoneBtn" class="btn btn-small">None</button>
+                </div>
+            </div>
+
+            <div class="filter-controls">
+                <label class="filter-label">Filter by type:</label>
+                <div class="filter-buttons">
+                    <button class="filter-btn active" data-filter="all">All</button>
+                    <button class="filter-btn" data-filter="image">Images</button>
+                    <button class="filter-btn" data-filter="video">Videos</button>
+                    <button class="filter-btn" data-filter="audio">Audio</button>
+                    <button class="filter-btn" data-filter="link">Links</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Resource List -->
+        <div id="resourceList" class="resource-list" style="display: none;">
+            <!-- Resources will be dynamically populated here -->
+        </div>
+
+        <!-- Download Section -->
+        <div id="downloadSection" class="download-section" style="display: none;">
+            <div class="download-controls">
+                <button id="downloadSelectedBtn" class="btn btn-success btn-large" disabled>
+                    <span class="btn-icon">⬇️</span>
+                    Download Selected (<span id="selectedCount">0</span>)
+                </button>
+            </div>
+
+            <div id="downloadProgress" class="download-progress" style="display: none;">
+                <div class="progress-text">Downloading...</div>
+                <div class="progress-details">
+                    <span id="downloadStatus">Preparing downloads...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <div class="footer-info">
+                <small>Extension will download files to your default download folder</small>
+            </div>
+        </footer>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>
