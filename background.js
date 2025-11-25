@@ -120,46 +120,66 @@ function scanPageForResources() {
         }
     }
 
-    // Helper function to generate filename from URL
-    function generateFilename(url) {
+    // Helper function to generate filename from URL (preserve original names)
+    function generateFilename(url, elementText = '') {
         try {
             const urlObj = new URL(url);
             const pathname = urlObj.pathname;
-            let filename = pathname.split('/').pop() || 'download';
+            let filename = decodeURIComponent(pathname.split('/').pop() || 'download');
 
-            // Handle special cases
-            if (url.includes('youtube.com') || url.includes('youtu.be')) {
-                const videoIdMatch = url.match(/(?:v=|embed\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-                if (videoIdMatch) {
-                    filename = `youtube_${videoIdMatch[1]}.mp4`;
+            // Remove query parameters from filename if they exist
+            filename = filename.split('?')[0];
+
+            // Handle special cases only for platforms that don't have real filenames
+            if (!filename || filename === 'download' || filename.length < 3) {
+                if (url.includes('youtube.com') || url.includes('youtu.be')) {
+                    const videoIdMatch = url.match(/(?:v=|embed\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+                    if (videoIdMatch) {
+                        filename = `youtube_${videoIdMatch[1]}.mp4`;
+                    }
+                } else if (url.includes('vimeo.com')) {
+                    const videoIdMatch = url.match(/vimeo\.com\/(?:video\/)?(\d+)/);
+                    if (videoIdMatch) {
+                        filename = `vimeo_${videoIdMatch[1]}.mp4`;
+                    }
+                } else if (url.startsWith('blob:')) {
+                    // Generate timestamp-based filename for blob URLs
+                    const timestamp = Date.now();
+                    const ext = getFileExtension(url) || 'mp4';
+                    filename = `media_${timestamp}.${ext}`;
+                } else {
+                    // Use element text as fallback, clean it up
+                    const cleanText = elementText.replace(/[<>:"/\\|?*]/g, '_').trim();
+                    filename = cleanText || `download_${Date.now()}`;
                 }
-            } else if (url.includes('vimeo.com')) {
-                const videoIdMatch = url.match(/vimeo\.com\/(?:video\/)?(\d+)/);
-                if (videoIdMatch) {
-                    filename = `vimeo_${videoIdMatch[1]}.mp4`;
-                }
-            } else if (url.startsWith('blob:')) {
-                // Generate timestamp-based filename for blob URLs
-                const timestamp = Date.now();
-                const ext = getFileExtension(url) || 'mp4';
-                filename = `media_${timestamp}.${ext}`;
             }
 
-            // If no extension, try to guess from content-type or URL patterns
+            // Ensure filename has an extension
             if (!filename.includes('.')) {
                 const ext = getFileExtension(url);
                 if (ext) {
                     filename = `${filename}.${ext}`;
                 } else {
-                    // Default extensions based on URL patterns
+                    // Detect file type from URL patterns or content
                     if (url.includes('video') || /\.(mp4|webm|avi|mov|mkv|m4v|3gp|flv|wmv)/i.test(url)) {
                         filename = `${filename}.mp4`;
                     } else if (url.includes('audio') || /\.(mp3|wav|ogg|m4a|aac|flac|wma)/i.test(url)) {
                         filename = `${filename}.mp3`;
+                    } else if (/subtitle|caption|srt|vtt|ass|ssa/i.test(url) || /subtitle|caption|srt|vtt|ass|ssa/i.test(elementText)) {
+                        filename = `${filename}.srt`;
                     } else {
                         filename = `${filename}.file`;
                     }
                 }
+            }
+
+            // Clean up filename (remove unsafe characters but preserve structure)
+            filename = filename.replace(/[<>:"/\\|?*]/g, '_');
+
+            // Limit length but preserve extension
+            if (filename.length > 150) {
+                const ext = filename.substring(filename.lastIndexOf('.'));
+                filename = filename.substring(0, 150 - ext.length) + ext;
             }
 
             return filename;
@@ -173,12 +193,13 @@ function scanPageForResources() {
         const url = resolveUrl(link.href);
         if (url && !url.startsWith('javascript:') && !url.startsWith('mailto:') && !url.startsWith('tel:')) {
             const ext = getFileExtension(url);
+            const linkText = link.textContent?.trim() || link.title || 'Link';
             resources.add(JSON.stringify({
                 url: url,
                 type: 'link',
-                filename: generateFilename(url),
+                filename: generateFilename(url, linkText),
                 element: 'a',
-                text: link.textContent?.trim() || link.title || 'Link',
+                text: linkText,
                 extension: ext
             }));
         }
@@ -188,12 +209,13 @@ function scanPageForResources() {
     document.querySelectorAll('img').forEach(img => {
         // Regular src attribute
         if (img.src && img.src.startsWith('http')) {
+            const imgText = img.alt || img.title || 'Image';
             resources.add(JSON.stringify({
                 url: img.src,
                 type: 'image',
-                filename: generateFilename(img.src),
+                filename: generateFilename(img.src, imgText),
                 element: 'img',
-                text: img.alt || img.title || 'Image',
+                text: imgText,
                 extension: getFileExtension(img.src)
             }));
         }
@@ -204,12 +226,13 @@ function scanPageForResources() {
             if (value) {
                 const url = resolveUrl(value);
                 if (url && url.startsWith('http')) {
+                    const imgText = img.alt || img.title || 'Lazy Image';
                     resources.add(JSON.stringify({
                         url: url,
                         type: 'image',
-                        filename: generateFilename(url),
+                        filename: generateFilename(url, imgText),
                         element: 'img',
-                        text: img.alt || img.title || 'Lazy Image',
+                        text: imgText,
                         extension: getFileExtension(url)
                     }));
                 }
@@ -225,12 +248,13 @@ function scanPageForResources() {
             if (src) {
                 const url = resolveUrl(src);
                 if (url && (url.startsWith('http') || url.startsWith('blob:'))) {
+                    const videoText = video.title || video.getAttribute('alt') || 'Video';
                     resources.add(JSON.stringify({
                         url: url,
                         type: 'video',
-                        filename: generateFilename(url),
+                        filename: generateFilename(url, videoText),
                         element: 'video',
-                        text: video.title || video.getAttribute('alt') || 'Video',
+                        text: videoText,
                         extension: getFileExtension(url)
                     }));
                 }
@@ -245,12 +269,13 @@ function scanPageForResources() {
             if (src) {
                 const url = resolveUrl(src);
                 if (url && (url.startsWith('http') || url.startsWith('blob:'))) {
+                    const audioText = audio.title || audio.getAttribute('alt') || 'Audio';
                     resources.add(JSON.stringify({
                         url: url,
                         type: 'audio',
-                        filename: generateFilename(url),
+                        filename: generateFilename(url, audioText),
                         element: 'audio',
-                        text: audio.title || audio.getAttribute('alt') || 'Audio',
+                        text: audioText,
                         extension: getFileExtension(url)
                     }));
                 }
@@ -354,7 +379,69 @@ function scanPageForResources() {
         });
     }
 
-    // Scan for embedded media players (generic)
+    // Scan for subtitle and caption files
+    function scanSubtitleFiles() {
+        // Look for track elements (common for subtitles)
+        document.querySelectorAll('track[src]').forEach(track => {
+            const url = resolveUrl(track.src);
+            if (url && url.startsWith('http')) {
+                const label = track.label || track.getAttribute('srclang') || 'Subtitle';
+                const kind = track.kind || 'subtitle';
+                resources.add(JSON.stringify({
+                    url: url,
+                    type: 'subtitle',
+                    filename: generateFilename(url, `${label}_${kind}`),
+                    element: 'track',
+                    text: `${label} (${kind})`,
+                    extension: getFileExtension(url) || 'srt'
+                }));
+            }
+        });
+
+        // Look for subtitle files in links
+        document.querySelectorAll('a[href]').forEach(link => {
+            const url = resolveUrl(link.href);
+            const href = link.href.toLowerCase();
+            const text = link.textContent?.trim().toLowerCase() || '';
+
+            // Check if it's a subtitle file
+            if (url && (
+                /\.(srt|vtt|ass|ssa|sub|sbv|ttml|dfxp)$/i.test(href) ||
+                /subtitle|caption|sub/i.test(text) ||
+                /subtitle|caption|sub/i.test(link.title || '')
+            )) {
+                const linkText = link.textContent?.trim() || link.title || 'Subtitle';
+                resources.add(JSON.stringify({
+                    url: url,
+                    type: 'subtitle',
+                    filename: generateFilename(url, linkText),
+                    element: 'subtitle-link',
+                    text: linkText,
+                    extension: getFileExtension(url) || 'srt'
+                }));
+            }
+        });
+
+        // Look for subtitle files in data attributes
+        document.querySelectorAll('[data-subtitle], [data-caption], [data-srt]').forEach(el => {
+            ['data-subtitle', 'data-caption', 'data-srt'].forEach(attr => {
+                const url = resolveUrl(el.getAttribute(attr));
+                if (url && url.startsWith('http')) {
+                    const text = el.textContent?.trim() || el.title || 'Subtitle';
+                    resources.add(JSON.stringify({
+                        url: url,
+                        type: 'subtitle',
+                        filename: generateFilename(url, text),
+                        element: 'subtitle-data',
+                        text: text,
+                        extension: getFileExtension(url) || 'srt'
+                    }));
+                }
+            });
+        });
+    }
+
+    // Enhanced scanning for embedded media players
     function scanEmbeddedPlayers() {
         // Look for common video player containers
         const playerSelectors = [
@@ -382,12 +469,13 @@ function scanPageForResources() {
                             const isAudio = /mp3|wav|ogg|m4a|aac|flac/i.test(ext);
 
                             if (isVideo || isAudio) {
+                                const text = el.title || el.getAttribute('alt') || `${isVideo ? 'Video' : 'Audio'} Player`;
                                 resources.add(JSON.stringify({
                                     url: resolvedUrl,
                                     type: isVideo ? 'video' : 'audio',
-                                    filename: generateFilename(resolvedUrl),
+                                    filename: generateFilename(resolvedUrl, text),
                                     element: 'embedded-player',
-                                    text: el.title || el.getAttribute('alt') || `${isVideo ? 'Video' : 'Audio'} Player`,
+                                    text: text,
                                     extension: ext
                                 }));
                             }
@@ -396,9 +484,7 @@ function scanPageForResources() {
                 });
             });
         });
-    }
-
-    // Scan for streaming manifests (HLS, DASH)
+    }    // Scan for streaming manifests (HLS, DASH)
     function scanStreamingManifests() {
         // Look for .m3u8 (HLS) and .mpd (DASH) files
         document.querySelectorAll('*').forEach(el => {
@@ -407,12 +493,13 @@ function scanPageForResources() {
                 if (url && (url.includes('.m3u8') || url.includes('.mpd'))) {
                     const resolvedUrl = resolveUrl(url);
                     if (resolvedUrl && resolvedUrl.startsWith('http')) {
+                        const manifestType = url.includes('.m3u8') ? 'HLS' : 'DASH';
                         resources.add(JSON.stringify({
                             url: resolvedUrl,
                             type: 'video',
-                            filename: generateFilename(resolvedUrl),
+                            filename: generateFilename(resolvedUrl, `Streaming ${manifestType} Manifest`),
                             element: 'streaming-manifest',
-                            text: `Streaming ${url.includes('.m3u8') ? 'HLS' : 'DASH'} Manifest`,
+                            text: `Streaming ${manifestType} Manifest`,
                             extension: url.includes('.m3u8') ? 'm3u8' : 'mpd'
                         }));
                     }
@@ -428,6 +515,7 @@ function scanPageForResources() {
     scanBlobUrls();
     scanEmbeddedPlayers();
     scanStreamingManifests();
+    scanSubtitleFiles(); // Add subtitle scanning
 
     // Scan for picture sources
     document.querySelectorAll('source').forEach(source => {
@@ -441,7 +529,7 @@ function scanPageForResources() {
                     resources.add(JSON.stringify({
                         url: url,
                         type: 'image',
-                        filename: generateFilename(url),
+                        filename: generateFilename(url, 'Source Image'),
                         element: 'source',
                         text: 'Source Image',
                         extension: getFileExtension(url)
@@ -466,7 +554,7 @@ function scanPageForResources() {
                         resources.add(JSON.stringify({
                             url: url,
                             type: 'image',
-                            filename: generateFilename(url),
+                            filename: generateFilename(url, 'Background Image'),
                             element: 'css-background',
                             text: 'Background Image',
                             extension: getFileExtension(url)
@@ -519,24 +607,136 @@ async function handleDownloadResources(resources, sendResponse) {
 
 // Download a single resource
 async function downloadResource(resource) {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
         const downloadId = `download_${Date.now()}_${Math.random()}`;
         downloadProgress.set(downloadId, { status: 'starting', filename: resource.filename });
 
-        chrome.downloads.download({
-            url: resource.url,
-            filename: resource.filename,
-            conflictAction: 'uniquify'
-        }, (id) => {
-            if (chrome.runtime.lastError) {
-                downloadProgress.set(downloadId, { status: 'failed', error: chrome.runtime.lastError.message });
-                reject(new Error(chrome.runtime.lastError.message));
-            } else {
-                downloadProgress.set(downloadId, { status: 'completed', chromeDownloadId: id });
-                resolve(id);
-            }
-        });
+        try {
+            // Get user settings
+            const settings = await getDownloadSettings();
+
+            // Generate final filename with settings applied
+            const finalFilename = await generateDownloadFilename(resource, settings);
+
+            console.log('Downloading:', resource.url, 'as', finalFilename);
+
+            chrome.downloads.download({
+                url: resource.url,
+                filename: finalFilename,
+                conflictAction: settings.avoidDuplicates ? 'uniquify' : 'overwrite'
+            }, (id) => {
+                if (chrome.runtime.lastError) {
+                    downloadProgress.set(downloadId, { status: 'failed', error: chrome.runtime.lastError.message });
+                    reject(new Error(chrome.runtime.lastError.message));
+                } else {
+                    downloadProgress.set(downloadId, { status: 'completed', chromeDownloadId: id });
+                    resolve(id);
+                }
+            });
+        } catch (error) {
+            downloadProgress.set(downloadId, { status: 'failed', error: error.message });
+            reject(error);
+        }
     });
+}
+
+// Get download settings from storage
+async function getDownloadSettings() {
+    const defaultSettings = {
+        downloadFolder: '',
+        createSubfolders: false,
+        avoidDuplicates: true,
+        preserveStructure: false,
+        addTimestamp: false,
+        addWebsiteName: false
+    };
+
+    try {
+        return await chrome.storage.sync.get(defaultSettings);
+    } catch (error) {
+        console.error('Error getting settings:', error);
+        return defaultSettings;
+    }
+}
+
+// Generate download filename based on settings
+async function generateDownloadFilename(resource, settings) {
+    let filename = resource.filename;
+    const url = new URL(resource.url);
+    const hostname = url.hostname.replace(/^www\./, '');
+
+    // Add website name prefix if enabled
+    if (settings.addWebsiteName) {
+        const cleanHostname = hostname.replace(/[<>:"/\\|?*]/g, '_');
+        filename = `${cleanHostname}_${filename}`;
+    }
+
+    // Add timestamp if enabled
+    if (settings.addTimestamp) {
+        const timestamp = new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-');
+        const dotIndex = filename.lastIndexOf('.');
+        if (dotIndex > 0) {
+            filename = filename.slice(0, dotIndex) + `_${timestamp}` + filename.slice(dotIndex);
+        } else {
+            filename = `${filename}_${timestamp}`;
+        }
+    }
+
+    // Handle custom download folder and subfolders
+    let folderPath = '';
+
+    if (settings.downloadFolder) {
+        folderPath = settings.downloadFolder;
+    }
+
+    // Create subfolders by resource type if enabled
+    if (settings.createSubfolders) {
+        let typeFolder = '';
+        switch (resource.type) {
+            case 'image':
+                typeFolder = 'images';
+                break;
+            case 'video':
+                typeFolder = 'videos';
+                break;
+            case 'audio':
+                typeFolder = 'audio';
+                break;
+            case 'subtitle':
+                typeFolder = 'subtitles';
+                break;
+            default:
+                typeFolder = 'files';
+        }
+
+        if (folderPath) {
+            folderPath = `${folderPath}/${typeFolder}`;
+        } else {
+            folderPath = typeFolder;
+        }
+    }
+
+    // Preserve website structure if enabled
+    if (settings.preserveStructure) {
+        const pathParts = url.pathname.split('/').filter(part => part && part !== filename.split('/').pop());
+        if (pathParts.length > 0) {
+            const sitePath = pathParts.join('/');
+            if (folderPath) {
+                folderPath = `${folderPath}/${hostname}/${sitePath}`;
+            } else {
+                folderPath = `${hostname}/${sitePath}`;
+            }
+        }
+    }
+
+    // Combine folder and filename
+    if (folderPath) {
+        // Clean folder path
+        folderPath = folderPath.replace(/[<>:"/\\|?*]/g, '_');
+        return `${folderPath}/${filename}`;
+    }
+
+    return filename;
 }
 
 // Listen for download completion events

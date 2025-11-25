@@ -39,6 +39,12 @@ body {
     align-items: center;
 }
 
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
 .title {
     font-size: 18px;
     font-weight: 600;
@@ -321,6 +327,11 @@ body {
 .type-link {
     background-color: #e3f2fd;
     color: #1976d2;
+}
+
+.type-subtitle {
+    background-color: #fff8e1;
+    color: #f57f17;
 }
 
 /* Special styling for different platforms */

@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Webpage Resource Downloader - Settings</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #667eea;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .setting-group {
+            margin-bottom: 25px;
+            padding: 20px;
+            border: 1px solid #e8eaed;
+            border-radius: 8px;
+            background-color: #fafbfc;
+        }
+
+        .setting-label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #333;
+        }
+
+        .setting-description {
+            font-size: 14px;
+            color: #5f6368;
+            margin-bottom: 15px;
+            line-height: 1.4;
+        }
+
+        .folder-input-container {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            padding: 10px 12px;
+            border: 1px solid #dadce0;
+            border-radius: 6px;
+            font-size: 14px;
+            background-color: white;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
+        }
+
+        .btn {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-primary {
+            background-color: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background-color: #5a6fd8;
+        }
+
+        .btn-secondary {
+            background-color: #f8f9fa;
+            color: #5f6368;
+            border: 1px solid #dadce0;
+        }
+
+        .btn-secondary:hover {
+            background-color: #e8eaed;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: #667eea;
+        }
+
+        .current-folder {
+            background-color: #e8f5e8;
+            padding: 10px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 13px;
+            margin-bottom: 10px;
+            word-break: break-all;
+        }
+
+        .save-status {
+            text-align: center;
+            padding: 10px;
+            border-radius: 6px;
+            margin-top: 20px;
+            display: none;
+        }
+
+        .save-status.success {
+            background-color: #e8f5e8;
+            color: #2d7d2d;
+            display: block;
+        }
+
+        .save-status.error {
+            background-color: #ffebee;
+            color: #c62828;
+            display: block;
+        }
+
+        .example-folder {
+            font-size: 12px;
+            color: #5f6368;
+            font-style: italic;
+            margin-top: 5px;
+        }
+
+        .reset-btn {
+            background-color: #ea6667;
+            color: white;
+            margin-left: 10px;
+        }
+
+        .reset-btn:hover {
+            background-color: #d85a5b;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>📁 Download Settings</h1>
+
+        <div class="setting-group">
+            <label class="setting-label">Download Folder</label>
+            <div class="setting-description">
+                Choose a custom folder for downloads. Leave empty to use the default Downloads folder.
+            </div>
+
+            <div id="currentFolderDisplay" class="current-folder" style="display: none;">
+                Current: <span id="currentFolderPath"></span>
+            </div>
+
+            <div class="folder-input-container">
+                <input type="text" id="downloadFolder" placeholder="e.g., WebResources or Downloads/MyFolder">
+                <button type="button" class="btn btn-secondary" id="resetFolderBtn">Reset to Default</button>
+            </div>
+
+            <div class="example-folder">
+                Examples: "WebResources", "Downloads/MyProject", "Desktop/MediaFiles"
+            </div>
+        </div>
+
+        <div class="setting-group">
+            <label class="setting-label">Download Behavior</label>
+            <div class="setting-description">
+                Configure how files are handled during download.
+            </div>
+
+            <div class="checkbox-group">
+                <input type="checkbox" id="createSubfolders">
+                <label for="createSubfolders">Create subfolders by resource type (images/, videos/, etc.)</label>
+            </div>
+
+            <div class="checkbox-group">
+                <input type="checkbox" id="avoidDuplicates">
+                <label for="avoidDuplicates">Automatically rename duplicate files</label>
+            </div>
+
+            <div class="checkbox-group">
+                <input type="checkbox" id="preserveStructure">
+                <label for="preserveStructure">Preserve website folder structure when possible</label>
+            </div>
+        </div>
+
+        <div class="setting-group">
+            <label class="setting-label">File Naming</label>
+            <div class="setting-description">
+                Control how downloaded files are named.
+            </div>
+
+            <div class="checkbox-group">
+                <input type="checkbox" id="addTimestamp">
+                <label for="addTimestamp">Add timestamp to filenames</label>
+            </div>
+
+            <div class="checkbox-group">
+                <input type="checkbox" id="addWebsiteName">
+                <label for="addWebsiteName">Add website name prefix to files</label>
+            </div>
+        </div>
+
+        <button type="button" class="btn btn-primary" id="saveSettingsBtn">Save Settings</button>
+
+        <div id="saveStatus" class="save-status"></div>
+    </div>
+
+    <script src="options.js"></script>
+</body>
+
+</html>

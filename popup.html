@@ -15,6 +15,9 @@
             <div class="header-content">
                 <h1 class="title">Resource Downloader</h1>
                 <div class="header-actions">
+                    <button id="settingsBtn" class="btn btn-secondary btn-small" title="Settings">
+                        <span class="btn-icon">⚙️</span>
+                    </button>
                     <button id="scanBtn" class="btn btn-primary">
                         <span class="btn-icon">🔍</span>
                         Scan Page
@@ -52,6 +55,7 @@
                     <button class="filter-btn" data-filter="image">Images</button>
                     <button class="filter-btn" data-filter="video">Videos</button>
                     <button class="filter-btn" data-filter="audio">Audio</button>
+                    <button class="filter-btn" data-filter="subtitle">Subtitles</button>
                     <button class="filter-btn" data-filter="link">Links</button>
                 </div>
             </div>
@@ -82,7 +86,7 @@
         <!-- Footer -->
         <footer class="footer">
             <div class="footer-info">
-                <small>Extension will download files to your default download folder</small>
+                <small id="downloadLocationInfo">Extension will download files to your default download folder</small>
             </div>
         </footer>
     </div>

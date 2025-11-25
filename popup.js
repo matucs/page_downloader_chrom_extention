@@ -11,11 +11,13 @@ class ResourceDownloader {
         this.initializeElements();
         this.bindEvents();
         this.updateUI();
+        this.updateDownloadLocationInfo(); // Show current download location
     }
 
     initializeElements() {
         // Main buttons
         this.scanBtn = document.getElementById('scanBtn');
+        this.settingsBtn = document.getElementById('settingsBtn');
         this.selectAllBtn = document.getElementById('selectAllBtn');
         this.selectNoneBtn = document.getElementById('selectNoneBtn');
         this.downloadSelectedBtn = document.getElementById('downloadSelectedBtn');
@@ -36,11 +38,13 @@ class ResourceDownloader {
         this.resourceCount = document.getElementById('resourceCount');
         this.selectedCount = document.getElementById('selectedCount');
         this.downloadStatus = document.getElementById('downloadStatus');
+        this.downloadLocationInfo = document.getElementById('downloadLocationInfo');
     }
 
     bindEvents() {
         // Main action buttons
         this.scanBtn.addEventListener('click', () => this.scanPage());
+        this.settingsBtn.addEventListener('click', () => this.openSettings());
         this.selectAllBtn.addEventListener('click', () => this.selectAll());
         this.selectNoneBtn.addEventListener('click', () => this.selectNone());
         this.downloadSelectedBtn.addEventListener('click', () => this.downloadSelected());
@@ -406,6 +410,49 @@ class ResourceDownloader {
                 resolve(response);
             });
         });
+    }
+
+    openSettings() {
+        chrome.runtime.openOptionsPage();
+    }
+
+    async updateDownloadLocationInfo() {
+        try {
+            const settings = await this.getDownloadSettings();
+            let locationText = 'Downloads to: ';
+
+            if (settings.downloadFolder) {
+                locationText += settings.downloadFolder;
+            } else {
+                locationText += 'Default download folder';
+            }
+
+            if (settings.createSubfolders) {
+                locationText += ' (organized by type)';
+            }
+
+            this.downloadLocationInfo.textContent = locationText;
+        } catch (error) {
+            console.error('Error updating download location info:', error);
+        }
+    }
+
+    async getDownloadSettings() {
+        const defaultSettings = {
+            downloadFolder: '',
+            createSubfolders: false,
+            avoidDuplicates: true,
+            preserveStructure: false,
+            addTimestamp: false,
+            addWebsiteName: false
+        };
+
+        try {
+            return await chrome.storage.sync.get(defaultSettings);
+        } catch (error) {
+            console.error('Error getting settings:', error);
+            return defaultSettings;
+        }
     }
 
     truncateText(text, maxLength) {
