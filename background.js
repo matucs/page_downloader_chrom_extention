@@ -1,5 +1,28 @@
 // Background Service Worker for Webpage Resource Downloader Extension
 // Handles downloads and communication between popup and content scripts
+// Cross-browser compatible for Chrome and Firefox
+
+// Import browser compatibility layer
+try {
+    importScripts('browser-compatibility.js');
+} catch (error) {
+    console.error('Could not import browser compatibility layer:', error);
+}
+
+// Initialize browser compatibility
+let browserCompat;
+try {
+    browserCompat = new BrowserCompat();
+    console.log(`Extension running on ${browserCompat.getBrowserName()}`);
+} catch (error) {
+    console.error('Browser compatibility layer initialization failed:', error);
+    // Fallback to direct chrome API
+    browserCompat = {
+        api: (typeof browser !== 'undefined') ? browser : chrome,
+        isFirefox: typeof browser !== 'undefined' && typeof chrome === 'undefined',
+        isChrome: typeof chrome !== 'undefined'
+    };
+}
 
 // Keep track of download progress for UI updates
 let downloadProgress = new Map();
@@ -10,11 +33,15 @@ let keepAliveInterval;
 function startKeepAlive() {
     if (keepAliveInterval) return;
 
-    keepAliveInterval = setInterval(() => {
-        chrome.runtime.getPlatformInfo(() => {
-            // This is just a dummy operation to keep the service worker alive
-        });
-    }, 20000); // Every 20 seconds
+    // Chrome-specific keep alive mechanism
+    if (browserCompat?.isChrome) {
+        keepAliveInterval = setInterval(() => {
+            chrome.runtime.getPlatformInfo(() => {
+                // This is just a dummy operation to keep the service worker alive
+            });
+        }, 20000); // Every 20 seconds
+    }
+    // Firefox doesn't need keep alive for background scripts
 }
 
 function stopKeepAlive() {

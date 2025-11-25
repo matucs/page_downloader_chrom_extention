@@ -1,10 +1,17 @@
 // Premium License Manager for Webpage Resource Downloader
 // Handles free vs pro version limitations and licensing
+// Cross-browser compatible for Chrome and Firefox
 
 class LicenseManager {
     constructor() {
         this.FREE_DOWNLOAD_LIMIT = 25; // Files per day for free users - generous for growth
         this.FREE_BATCH_LIMIT = 3; // Max files per batch for free users - encourages frequent usage
+        
+        // Initialize browser compatibility
+        this.browserCompat = window.BrowserCompat ? new BrowserCompat() : null;
+        
+        // Fallback for direct API access
+        this.api = this.browserCompat?.api || (typeof browser !== 'undefined' ? browser : chrome);
         
         this.premiumFeatures = {
             unlimitedDownloads: false,
@@ -28,7 +35,7 @@ class LicenseManager {
     // Get current license status
     async getLicenseStatus() {
         try {
-            const license = await chrome.storage.sync.get({
+            const defaultData = {
                 isPro: false,
                 licenseKey: '',
                 activationDate: null,
@@ -40,7 +47,27 @@ class LicenseManager {
                 weeklyResetDate: this.getWeekStartDate(),
                 totalDownloads: 0,
                 firstUsedDate: new Date().toISOString()
-            });
+            };
+            
+            let license;
+            if (this.browserCompat) {
+                license = await this.browserCompat.getStorage(defaultData);
+            } else {
+                // Fallback for direct API
+                if (this.api.storage?.sync?.get) {
+                    if (typeof browser !== 'undefined') {
+                        // Firefox
+                        license = await this.api.storage.sync.get(defaultData);
+                    } else {
+                        // Chrome
+                        license = await new Promise(resolve => {
+                            this.api.storage.sync.get(defaultData, resolve);
+                        });
+                    }
+                } else {
+                    license = defaultData;
+                }
+            }
             
             // Reset daily counter if it's a new day
             const today = new Date().toDateString();
@@ -56,12 +83,25 @@ class LicenseManager {
                     license.weeklyResetDate = weekStart;
                 }
                 
-                await chrome.storage.sync.set({
+                const updateData = {
                     dailyDownloads: 0,
                     weeklyDownloads: license.weeklyDownloads,
                     lastResetDate: today,
                     weeklyResetDate: weekStart
-                });
+                };
+                
+                if (this.browserCompat) {
+                    await this.browserCompat.setStorage(updateData);
+                } else {
+                    // Fallback
+                    if (typeof browser !== 'undefined') {
+                        await this.api.storage.sync.set(updateData);
+                    } else {
+                        await new Promise(resolve => {
+                            this.api.storage.sync.set(updateData, resolve);
+                        });
+                    }
+                }
             }
             
             return license;

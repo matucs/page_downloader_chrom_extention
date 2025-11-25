@@ -1,23 +1,23 @@
 {
-    "manifest_version": 3,
+    "manifest_version": 2,
     "name": "Webpage Resource Downloader",
     "version": "1.0.0",
-    "description": "Scan and download all resources from any webpage including images, videos, links, and more",
+    "description": "Download images, videos, audio, documents, and other resources from any webpage with advanced filtering and organization features.",
+    "author": "Your Name",
+    
     "permissions": [
-        "downloads",
         "activeTab",
-        "scripting",
-        "storage"
-    ],
-    "host_permissions": [
+        "downloads",
+        "storage",
         "<all_urls>"
     ],
+    
     "background": {
-        "service_worker": "background.js",
-        "type": "module"
+        "scripts": ["browser-compatibility.js", "background.js"],
+        "persistent": false
     },
     
-    "action": {
+    "browser_action": {
         "default_popup": "popup.html",
         "default_title": "Resource Downloader",
         "default_icon": {
@@ -43,23 +43,12 @@
         "run_at": "document_idle"
     }],
     
-    "web_accessible_resources": [{
-        "resources": ["content.js", "license.js"],
-        "matches": ["<all_urls>"]
-    }],
+    "web_accessible_resources": ["content.js", "license.js", "browser-compatibility.js"],
     
     "browser_specific_settings": {
         "gecko": {
             "id": "webpage-resource-downloader@yourdomain.com",
             "strict_min_version": "109.0"
         }
-    },
-    
-    "cross_origin_embedder_policy": {
-        "value": "require-corp"
-    },
-    
-    "cross_origin_opener_policy": {
-        "value": "same-origin"
     }
 }

@@ -1,4 +1,5 @@
 // Popup JavaScript for Webpage Resource Downloader Extension
+// Cross-browser compatible for Chrome and Firefox
 
 class ResourceDownloader {
     constructor() {
@@ -8,6 +9,10 @@ class ResourceDownloader {
         this.isScanning = false;
         this.isDownloading = false;
         this.licenseManager = null;
+        
+        // Initialize browser compatibility
+        this.browserCompat = window.BrowserCompat ? new BrowserCompat() : null;
+        console.log(`Popup running on ${this.browserCompat?.getBrowserName() || 'Unknown browser'}`);
         
         this.initializeElements();
         this.bindEvents();
@@ -475,21 +480,29 @@ class ResourceDownloader {
         return new Promise((resolve, reject) => {
             console.log('Sending message:', message);
 
-            chrome.runtime.sendMessage(message, (response) => {
-                console.log('Received response:', response, 'Error:', chrome.runtime.lastError);
+            const api = this.browserCompat?.api || (typeof browser !== 'undefined' ? browser : chrome);
+            
+            if (this.browserCompat?.isFirefox || typeof browser !== 'undefined') {
+                // Firefox uses promises
+                api.runtime.sendMessage(message).then(resolve).catch(reject);
+            } else {
+                // Chrome uses callbacks
+                api.runtime.sendMessage(message, (response) => {
+                    console.log('Received response:', response, 'Error:', api.runtime.lastError);
 
-                if (chrome.runtime.lastError) {
-                    reject(new Error(chrome.runtime.lastError.message));
-                    return;
-                }
+                    if (api.runtime.lastError) {
+                        reject(new Error(api.runtime.lastError.message));
+                        return;
+                    }
 
-                if (response === undefined) {
-                    reject(new Error('No response from background script'));
-                    return;
-                }
+                    if (response === undefined) {
+                        reject(new Error('No response from background script'));
+                        return;
+                    }
 
-                resolve(response);
-            });
+                    resolve(response);
+                });
+            }
         });
     }
 
