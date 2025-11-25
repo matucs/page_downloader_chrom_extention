@@ -129,6 +129,49 @@ body {
     border-bottom: 1px solid #e8eaed;
 }
 
+.license-status {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    background-color: #f8f9fa;
+    border-radius: 6px;
+    font-size: 13px;
+}
+
+.license-status.pro {
+    background-color: #e8f5e8;
+    color: #2d7d2d;
+}
+
+.license-status.trial {
+    background-color: #fff3e0;
+    color: #f57c00;
+}
+
+.license-status.free {
+    background-color: #e3f2fd;
+    color: #1976d2;
+}
+
+.upgrade-btn {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.upgrade-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+
 .status-message {
     text-align: center;
     color: #5f6368;
@@ -360,7 +403,6 @@ body {
     color: #0277bd;
 }
 
-/* Download section */
 .download-section {
     padding: 16px;
     border-top: 1px solid #e8eaed;
@@ -369,6 +411,60 @@ body {
 
 .download-controls {
     margin-bottom: 12px;
+}
+
+.limit-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    background-color: #fff8e1;
+    border: 1px solid #ffcc02;
+    border-radius: 6px;
+    padding: 12px;
+    margin-top: 12px;
+    font-size: 13px;
+}
+
+.warning-icon {
+    font-size: 16px;
+}
+
+.warning-text {
+    flex: 1;
+    line-height: 1.4;
+}
+
+.btn-link {
+    background: none;
+    border: none;
+    color: #667eea;
+    text-decoration: underline;
+    cursor: pointer;
+    font-size: inherit;
+    padding: 0;
+    margin-left: 4px;
+}
+
+.btn-link:hover {
+    color: #5a6fd8;
+}
+
+.premium-feature {
+    opacity: 0.5;
+    position: relative;
+}
+
+.premium-feature::after {
+    content: "🔒 Pro";
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    font-size: 9px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-weight: 600;
 }
 
 .download-progress {
@@ -457,4 +553,191 @@ body {
 
 .loading {
     animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* License and upgrade UI styles */
+.license-status {
+    font-size: 12px;
+    padding: 5px 10px;
+    border-radius: 4px;
+    background: #f5f5f5;
+    margin-bottom: 10px;
+}
+
+.upgrade-btn, .trial-btn {
+    background: #FF6B35;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background-color 0.3s;
+}
+
+.upgrade-btn:hover, .trial-btn:hover {
+    background: #E55A2B;
+}
+
+.trial-btn {
+    background: #4CAF50;
+    margin-right: 10px;
+}
+
+.trial-btn:hover {
+    background: #45A049;
+}
+
+.download-limit {
+    background: #FFF3E0;
+    border: 1px solid #FFB74D;
+    border-radius: 4px;
+    padding: 10px;
+    margin-bottom: 10px;
+    font-size: 12px;
+    color: #E65100;
+    display: none;
+}
+
+/* Upgrade Modal Styles */
+.upgrade-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 10000;
+}
+
+.upgrade-modal {
+    background: white;
+    border-radius: 8px;
+    width: 500px;
+    max-width: 90vw;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    border-bottom: 1px solid #eee;
+}
+
+.modal-header h3 {
+    margin: 0;
+    color: #333;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    cursor: pointer;
+    color: #999;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-close:hover {
+    color: #333;
+}
+
+.modal-content {
+    padding: 20px;
+}
+
+.license-comparison {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 20px;
+}
+
+.license-tier {
+    flex: 1;
+    padding: 20px;
+    border: 2px solid #e0e0e0;
+    border-radius: 8px;
+    text-align: center;
+}
+
+.license-tier.pro {
+    border-color: #FF6B35;
+    position: relative;
+}
+
+.license-tier h4 {
+    margin: 0 0 15px 0;
+    font-size: 18px;
+    color: #333;
+}
+
+.license-tier ul {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 15px 0;
+}
+
+.license-tier li {
+    padding: 5px 0;
+    font-size: 14px;
+    color: #666;
+}
+
+.license-tier li:before {
+    content: "✓ ";
+    color: #4CAF50;
+    font-weight: bold;
+}
+
+.price {
+    font-size: 20px;
+    font-weight: bold;
+    color: #FF6B35;
+    margin-top: 15px;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+}
+
+/* Animation for slide-in message */
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+/* Responsive design for modal */
+@media (max-width: 600px) {
+    .license-comparison {
+        flex-direction: column;
+    }
+    
+    .upgrade-modal {
+        width: 95vw;
+        margin: 20px;
+    }
+    
+    .modal-actions {
+        flex-direction: column;
+    }
 }

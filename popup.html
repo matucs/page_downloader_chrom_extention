@@ -28,6 +28,10 @@
 
         <!-- Status Section -->
         <div id="statusSection" class="status-section">
+            <div id="licenseStatus" class="license-status">
+                <span id="licenseStatusText">Loading...</span>
+                <button id="upgradeBtn" class="upgrade-btn" style="display: none;">Upgrade to Pro</button>
+            </div>
             <div id="statusMessage" class="status-message">
                 Click "Scan Page" to find downloadable resources
             </div>
@@ -73,6 +77,14 @@
                     <span class="btn-icon">⬇️</span>
                     Download Selected (<span id="selectedCount">0</span>)
                 </button>
+                
+                <div id="limitWarning" class="limit-warning" style="display: none;">
+                    <div class="warning-icon">⚠️</div>
+                    <div class="warning-text">
+                        <span id="limitMessage"></span>
+                        <button id="upgradeLimitBtn" class="btn-link">Upgrade to Pro</button>
+                    </div>
+                </div>
             </div>
 
             <div id="downloadProgress" class="download-progress" style="display: none;">
@@ -91,6 +103,7 @@
         </footer>
     </div>
 
+    <script src="license.js"></script>
     <script src="popup.js"></script>
 </body>
 
