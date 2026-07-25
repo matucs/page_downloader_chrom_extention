@@ -110,6 +110,57 @@ class LicenseManager {
             return { isPro: false, dailyDownloads: 0 };
         }
     }
+
+    isLicenseExpired(license) {
+        if (!license?.expiryDate) {
+            return false;
+        }
+        return new Date(license.expiryDate) <= new Date();
+    }
+
+    async hasActiveLicense() {
+        const license = await this.getLicenseStatus();
+        return Boolean(license.isPro && !this.isLicenseExpired(license));
+    }
+
+    async isProUser() {
+        const license = await this.getLicenseStatus();
+        return Boolean(
+            license.isPro &&
+            license.licenseKey !== 'TRIAL' &&
+            !this.isLicenseExpired(license)
+        );
+    }
+
+    async isTrialActive() {
+        const license = await this.getLicenseStatus();
+        return Boolean(
+            license.isPro &&
+            license.licenseKey === 'TRIAL' &&
+            !this.isLicenseExpired(license)
+        );
+    }
+
+    async getTrialDaysRemaining() {
+        const license = await this.getLicenseStatus();
+        if (!license.expiryDate || license.licenseKey !== 'TRIAL') {
+            return 0;
+        }
+
+        const daysLeft = Math.ceil((new Date(license.expiryDate) - new Date()) / (1000 * 60 * 60 * 24));
+        return Math.max(0, daysLeft);
+    }
+
+    async getUsage() {
+        const license = await this.getLicenseStatus();
+        return {
+            dailyDownloads: license.dailyDownloads || 0,
+            weeklyDownloads: license.weeklyDownloads || 0,
+            totalDownloads: license.totalDownloads || 0,
+            isPro: await this.isProUser(),
+            isTrial: await this.isTrialActive()
+        };
+    }
     
     // Check if user can download more files
     async canDownload(fileCount = 1) {

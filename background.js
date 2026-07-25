@@ -26,6 +26,113 @@ try {
 
 // Keep track of download progress for UI updates
 let downloadProgress = new Map();
+const DOWNLOAD_SESSIONS_KEY = 'downloadSessionsByTab';
+const SCAN_STATES_KEY = 'scanStatesByTab';
+const chromeDownloadListeners = new Map();
+const batchRunningByTab = new Set();
+
+class DownloadCancelledError extends Error {
+    constructor() {
+        super('Download cancelled');
+        this.name = 'DownloadCancelledError';
+    }
+}
+
+function getPersistentStorage() {
+    return chrome.storage.session || chrome.storage.local;
+}
+
+function tabKey(tabId) {
+    return String(tabId);
+}
+
+async function getAllDownloadSessions() {
+    const data = await getPersistentStorage().get(DOWNLOAD_SESSIONS_KEY);
+    return data[DOWNLOAD_SESSIONS_KEY] || {};
+}
+
+async function getDownloadSessionState(tabId) {
+    if (!tabId) {
+        return null;
+    }
+    const sessions = await getAllDownloadSessions();
+    return sessions[tabKey(tabId)] || null;
+}
+
+async function setDownloadSessionState(tabId, updates) {
+    if (!tabId) {
+        return;
+    }
+    const sessions = await getAllDownloadSessions();
+    const key = tabKey(tabId);
+    const existing = sessions[key] || {};
+    sessions[key] = {
+        ...existing,
+        ...updates,
+        tabId: Number(tabId),
+        updatedAt: Date.now()
+    };
+    await getPersistentStorage().set({ [DOWNLOAD_SESSIONS_KEY]: sessions });
+}
+
+async function clearDownloadSessionState(tabId) {
+    if (!tabId) {
+        return;
+    }
+    const sessions = await getAllDownloadSessions();
+    delete sessions[tabKey(tabId)];
+    await getPersistentStorage().set({ [DOWNLOAD_SESSIONS_KEY]: sessions });
+}
+
+async function getAllScanStates() {
+    const data = await getPersistentStorage().get(SCAN_STATES_KEY);
+    return data[SCAN_STATES_KEY] || {};
+}
+
+async function getLastScanState(tabId) {
+    if (!tabId) {
+        return null;
+    }
+    const states = await getAllScanStates();
+    return states[tabKey(tabId)] || null;
+}
+
+async function setLastScanState(tabId, scanState) {
+    if (!tabId) {
+        return;
+    }
+    const states = await getAllScanStates();
+    states[tabKey(tabId)] = { ...scanState, tabId: Number(tabId) };
+    await getPersistentStorage().set({ [SCAN_STATES_KEY]: states });
+}
+
+function isBatchRunning(tabId) {
+    return batchRunningByTab.has(tabKey(tabId));
+}
+
+function setBatchRunning(tabId, running) {
+    const key = tabKey(tabId);
+    if (running) {
+        batchRunningByTab.add(key);
+    } else {
+        batchRunningByTab.delete(key);
+    }
+}
+
+function maybeStopKeepAlive() {
+    if (batchRunningByTab.size === 0) {
+        setTimeout(stopKeepAlive, 5000);
+    }
+}
+
+function removeDownloadListenersForTab(tabId) {
+    for (const [downloadId, entry] of chromeDownloadListeners) {
+        if (entry.tabId === Number(tabId)) {
+            chrome.downloads.onChanged.removeListener(entry.listener);
+            chromeDownloadListeners.delete(downloadId);
+        }
+    }
+}
 
 // Keep the service worker alive during operations
 let keepAliveInterval;
@@ -62,7 +169,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             return true; // Keep the message channel open for async response
 
         case 'downloadResources':
-            handleDownloadResources(message.resources, sendResponse);
+            handleDownloadResources(message.tabId, message.resources, sendResponse);
+            return true;
+
+        case 'getDownloadSession':
+            getDownloadSessionState(message.tabId).then((session) => {
+                sendResponse({ session });
+            });
+            return true;
+
+        case 'saveScanState':
+            setLastScanState(message.tabId, message.scanState).then(() => {
+                sendResponse({ success: true });
+            });
+            return true;
+
+        case 'getScanState':
+            getLastScanState(message.tabId).then((scanState) => {
+                sendResponse({ scanState });
+            });
+            return true;
+
+        case 'clearDownloadSession':
+            handleClearDownloadSession(message.tabId, message.onlyIfFinished, sendResponse);
+            return true;
+
+        case 'markSessionLicenseRecorded':
+            getDownloadSessionState(message.tabId).then(async (session) => {
+                if (session) {
+                    await setDownloadSessionState(message.tabId, { licenseRecorded: true });
+                }
+                sendResponse({ success: true });
+            });
+            return true;
+
+        case 'pauseDownload':
+            handlePauseDownload(message.tabId, sendResponse);
+            return true;
+
+        case 'resumeDownload':
+            handleResumeDownload(message.tabId, sendResponse);
+            return true;
+
+        case 'cancelDownload':
+            handleCancelDownload(message.tabId, sendResponse);
             return true;
 
         case 'getDownloadProgress':
@@ -140,6 +290,10 @@ function scanPageForResources() {
     function getFileExtension(url) {
         try {
             const pathname = new URL(url).pathname;
+            const compoundMatch = pathname.match(/\.(tar\.(gz|bz2|xz|z)|tgz|tbz2|tar\.z)(?:\?|#|$)/i);
+            if (compoundMatch) {
+                return compoundMatch[1].toLowerCase();
+            }
             const match = pathname.match(/\.([a-zA-Z0-9]+)(?:\?|#|$)/);
             return match ? match[1].toLowerCase() : '';
         } catch {
@@ -147,12 +301,295 @@ function scanPageForResources() {
         }
     }
 
+    const ARCHIVE_EXTENSIONS = new Set([
+        'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'tgz', 'tbz2',
+        'cab', 'iso', 'dmg', 'apk', 'deb', 'rpm', 'z', 'lz', 'lzma',
+        'arj', 'ace', 'zst', 'lz4', 'sit', 'sitx', 'jar', 'war', 'ear',
+        'compress', 'cpio', 'lha', 'lzh'
+    ]);
+
+    function isArchiveUrl(url) {
+        try {
+            const pathname = new URL(url).pathname.toLowerCase();
+            if (/\.(tar\.(gz|bz2|xz|z)|tgz|tbz2|tar\.z)(?:\?|#|$)/i.test(pathname)) {
+                return true;
+            }
+            return ARCHIVE_EXTENSIONS.has(getFileExtension(url));
+        } catch {
+            return false;
+        }
+    }
+
+    const OTHER_FILE_EXTENSIONS = new Set([
+        'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+        'odt', 'ods', 'odp', 'odg', 'odf', 'rtf', 'txt', 'md',
+        'csv', 'tsv', 'json', 'xml', 'yaml', 'yml', 'html', 'htm', 'xhtml',
+        'epub', 'mobi', 'azw', 'azw3', 'fb2', 'djvu',
+        'ttf', 'otf', 'woff', 'woff2', 'eot',
+        'psd', 'ai', 'eps', 'sketch', 'fig', 'xd',
+        'css', 'js', 'mjs', 'ts', 'tsx', 'jsx',
+        'py', 'java', 'c', 'cpp', 'h', 'hpp', 'go', 'rs', 'php', 'rb', 'sh', 'bat', 'sql',
+        'ics', 'vcf', 'torrent', 'bin', 'dat', 'log', 'ini', 'cfg', 'conf',
+        'kml', 'kmz', 'gpx', 'geojson', 'wasm', 'swf', 'svg'
+    ]);
+
+    function isOtherFileUrl(url, linkText = '') {
+        return OTHER_FILE_EXTENSIONS.has(getEffectiveExtension(url, linkText));
+    }
+
+    const VIDEO_EXTENSIONS = new Set([
+        'mp4', 'webm', 'avi', 'mov', 'mkv', 'm4v', '3gp', 'flv', 'wmv', 'm3u8', 'mpd'
+    ]);
+
+    const AUDIO_EXTENSIONS = new Set([
+        'mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'wma', 'opus'
+    ]);
+
+    const SUBTITLE_EXTENSIONS = new Set([
+        'srt', 'vtt', 'ass', 'ssa', 'sub', 'sbv', 'ttml', 'dfxp'
+    ]);
+
+    function getFilenameFromUrl(url) {
+        try {
+            const urlObj = new URL(url);
+            const paramName = urlObj.searchParams.get('filename') ||
+                urlObj.searchParams.get('file') ||
+                urlObj.searchParams.get('name');
+
+            if (paramName) {
+                return decodeURIComponent(paramName);
+            }
+
+            return decodeURIComponent(urlObj.pathname.split('/').pop() || '');
+        } catch {
+            return '';
+        }
+    }
+
+    function getEffectiveExtension(url, linkText = '') {
+        const fromFilename = getFilenameFromUrl(url);
+        if (fromFilename && fromFilename.includes('.')) {
+            const parts = fromFilename.toLowerCase().split('.');
+            const ext = parts[parts.length - 1];
+            if (ext) {
+                return ext;
+            }
+        }
+
+        const fromUrl = getFileExtension(url);
+        if (fromUrl) {
+            return fromUrl;
+        }
+
+        const text = (linkText || '').trim();
+        if (text.includes('.')) {
+            const match = text.match(/\.([a-z0-9]+)$/i);
+            if (match) {
+                return match[1].toLowerCase();
+            }
+        }
+
+        return '';
+    }
+
+    function isGitIrVideoSlug(value) {
+        const text = (value || '').toLowerCase();
+        if (!text) {
+            return false;
+        }
+        if (/\.(srt|vtt|ass|ssa|sub|sbv|ttml|dfxp)(?:[/?#]|$)/i.test(text)) {
+            return false;
+        }
+        return /-[a-z0-9]+-git\.ir(?:[/?#]|$)/i.test(text);
+    }
+
+    function isSubtitleLink(url, linkText = '', linkElement = null) {
+        const ext = getEffectiveExtension(url, linkText);
+        if (SUBTITLE_EXTENSIONS.has(ext)) {
+            return true;
+        }
+
+        const filename = getFilenameFromUrl(url) || (linkText || '').trim();
+        if (/\.(srt|vtt|ass|ssa|sub|sbv|ttml|dfxp)(?:[/?#]|$)/i.test(filename)) {
+            return true;
+        }
+        if (/\.[a-z]{2}\.srt$/i.test(filename)) {
+            return true;
+        }
+
+        const combined = `${url} ${linkText}`.toLowerCase();
+        if (/subtitle|caption|\bcaption\b|\bsubtitles?\b/.test(combined) &&
+            (SUBTITLE_EXTENSIONS.has(ext) || /\.srt|\.vtt/i.test(filename))) {
+            return true;
+        }
+
+        if (linkElement?.closest('track')) {
+            return true;
+        }
+
+        return false;
+    }
+
+    function isVideoLink(url, linkText = '', linkElement = null) {
+        if (isSubtitleLink(url, linkText, linkElement)) {
+            return false;
+        }
+
+        const ext = getEffectiveExtension(url, linkText);
+        if (SUBTITLE_EXTENSIONS.has(ext) || ARCHIVE_EXTENSIONS.has(ext) || OTHER_FILE_EXTENSIONS.has(ext)) {
+            return false;
+        }
+        if (VIDEO_EXTENSIONS.has(ext)) {
+            return true;
+        }
+
+        const filename = getFilenameFromUrl(url);
+        const slug = filename || (linkText || '').trim();
+        const urlLower = url.toLowerCase();
+
+        if (isGitIrVideoSlug(slug) || isGitIrVideoSlug(urlLower)) {
+            return true;
+        }
+
+        if (/git\.ir\/api\/.*download/i.test(urlLower) && filename && isGitIrVideoSlug(filename)) {
+            return true;
+        }
+
+        if (/\/(video|videos|stream|streams|media|watch|play|hls|dash)\//i.test(url)) {
+            return true;
+        }
+        if (/aparat\.com|youtube\.com|youtu\.be|vimeo\.com|dailymotion\.com|wistia\.|brightcove|cloudflarestream|videodelivery\.net|stream\.cloudflare/i.test(urlLower)) {
+            return true;
+        }
+        if (/[?&](format|type|mime)=video/i.test(urlLower)) {
+            return true;
+        }
+
+        if (linkElement) {
+            if (linkElement.closest('video, [data-video], [data-video-url], .video-player, .plyr, .vjs-tech, [class*="video-player"], [class*="lesson-video"], [class*="course-video"]')) {
+                return true;
+            }
+
+            const mimeType = linkElement.getAttribute('type') || '';
+            if (/^video\//i.test(mimeType)) {
+                return true;
+            }
+
+            const downloadName = linkElement.getAttribute('download') || '';
+            if (VIDEO_EXTENSIONS.has(getEffectiveExtension('', downloadName))) {
+                return true;
+            }
+        }
+
+        if (isGitIrVideoSlug(linkText.trim())) {
+            return true;
+        }
+
+        if (/\b(watch video|play video|download video|video lesson|video overview)\b/i.test((linkText || '').toLowerCase())) {
+            return true;
+        }
+
+        return false;
+    }
+
+    function isAudioLink(url, linkText = '', linkElement = null) {
+        if (isSubtitleLink(url, linkText, linkElement)) {
+            return false;
+        }
+
+        const ext = getEffectiveExtension(url, linkText);
+        if (AUDIO_EXTENSIONS.has(ext)) {
+            return true;
+        }
+
+        const urlLower = url.toLowerCase();
+        const textLower = (linkText || '').toLowerCase();
+
+        if (/\/(audio|audios|podcast|podcasts|sound|music)\//i.test(urlLower)) {
+            return true;
+        }
+
+        if (linkElement) {
+            if (linkElement.closest('audio, [data-audio], .audio-player, [class*="audio-player"]')) {
+                return true;
+            }
+
+            const mimeType = linkElement.getAttribute('type') || '';
+            if (/^audio\//i.test(mimeType)) {
+                return true;
+            }
+        }
+
+        if (/\b(podcast|audiobook|soundtrack|download audio|play audio)\b/i.test(textLower)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    function isGenericNavigationLink(url, linkText = '', linkElement = null) {
+        if (isSubtitleLink(url, linkText, linkElement)) {
+            return false;
+        }
+        if (isVideoLink(url, linkText, linkElement) || isAudioLink(url, linkText, linkElement)) {
+            return false;
+        }
+        if (isArchiveUrl(url) || isOtherFileUrl(url, linkText)) {
+            return false;
+        }
+
+        try {
+            const urlObj = new URL(url);
+            const ext = getEffectiveExtension(url, linkText);
+            const pageExtensions = new Set(['html', 'htm', 'php', 'asp', 'aspx', 'jsp', '']);
+
+            if (pageExtensions.has(ext) && urlObj.pathname.length <= 1) {
+                return true;
+            }
+
+            const text = (linkText || '').trim().toLowerCase();
+            if (/^(home|about|contact|login|signup|register|menu|back|next|previous|prev|more|read more|click here)$/i.test(text)) {
+                return true;
+            }
+
+            if (linkElement && linkElement.getAttribute('role') === 'button' && text.length < 20) {
+                return true;
+            }
+        } catch {
+            return false;
+        }
+
+        return false;
+    }
+
+    function getLinkResourceType(url, linkText = '', linkElement = null) {
+        if (isArchiveUrl(url)) return 'archive';
+        if (isSubtitleLink(url, linkText, linkElement)) return 'subtitle';
+        if (isOtherFileUrl(url, linkText)) return 'other';
+        if (isAudioLink(url, linkText, linkElement)) return 'audio';
+        if (isVideoLink(url, linkText, linkElement)) return 'video';
+        return 'link';
+    }
+
+    function getLinkExtension(url, linkType, linkText = '') {
+        const ext = getEffectiveExtension(url, linkText);
+        if (ext) return ext;
+        if (linkType === 'video') return 'mp4';
+        if (linkType === 'audio') return 'mp3';
+        if (linkType === 'subtitle') return 'srt';
+        return '';
+    }
+
     // Helper function to generate filename from URL (preserve original names)
     function generateFilename(url, elementText = '') {
         try {
             const urlObj = new URL(url);
-            const pathname = urlObj.pathname;
-            let filename = decodeURIComponent(pathname.split('/').pop() || 'download');
+            const paramFilename = urlObj.searchParams.get('filename') ||
+                urlObj.searchParams.get('file') ||
+                urlObj.searchParams.get('name');
+            let filename = paramFilename
+                ? decodeURIComponent(paramFilename)
+                : decodeURIComponent(urlObj.pathname.split('/').pop() || 'download');
 
             // Remove query parameters from filename if they exist
             filename = filename.split('?')[0];
@@ -188,12 +625,18 @@ function scanPageForResources() {
                     filename = `${filename}.${ext}`;
                 } else {
                     // Detect file type from URL patterns or content
-                    if (url.includes('video') || /\.(mp4|webm|avi|mov|mkv|m4v|3gp|flv|wmv)/i.test(url)) {
+                    if (isVideoLink(url, elementText) || /\.(mp4|webm|avi|mov|mkv|m4v|3gp|flv|wmv)/i.test(url)) {
                         filename = `${filename}.mp4`;
-                    } else if (url.includes('audio') || /\.(mp3|wav|ogg|m4a|aac|flac|wma)/i.test(url)) {
+                    } else if (isSubtitleLink(url, elementText) || /\.(srt|vtt|ass|ssa)/i.test(url)) {
+                        filename = `${filename}.srt`;
+                    } else if (url.includes('audio') || isAudioLink(url, elementText) || /\.(mp3|wav|ogg|m4a|aac|flac|wma)/i.test(url)) {
                         filename = `${filename}.mp3`;
                     } else if (/subtitle|caption|srt|vtt|ass|ssa/i.test(url) || /subtitle|caption|srt|vtt|ass|ssa/i.test(elementText)) {
                         filename = `${filename}.srt`;
+                    } else if (isArchiveUrl(url)) {
+                        filename = `${filename}.${getFileExtension(url) || 'zip'}`;
+                    } else if (isOtherFileUrl(url)) {
+                        filename = `${filename}.${getFileExtension(url) || 'file'}`;
                     } else {
                         filename = `${filename}.file`;
                     }
@@ -219,18 +662,64 @@ function scanPageForResources() {
     document.querySelectorAll('a[href]').forEach(link => {
         const url = resolveUrl(link.href);
         if (url && !url.startsWith('javascript:') && !url.startsWith('mailto:') && !url.startsWith('tel:')) {
-            const ext = getFileExtension(url);
             const linkText = link.textContent?.trim() || link.title || 'Link';
+
+            if (isGenericNavigationLink(url, linkText, link)) {
+                return;
+            }
+
+            const linkType = getLinkResourceType(url, linkText, link);
+            const ext = getLinkExtension(url, linkType, linkText);
+
             resources.add(JSON.stringify({
                 url: url,
-                type: 'link',
+                type: linkType,
                 filename: generateFilename(url, linkText),
-                element: 'a',
+                element: linkType === 'link' ? 'a' : `${linkType}-link`,
                 text: linkText,
                 extension: ext
             }));
         }
     });
+
+    // Scan links inside common course/lesson containers for video URLs missed above
+    function scanCourseVideoLinks() {
+        const courseSelectors = [
+            '.lesson', '.course-lesson', '.video-lesson', '.lecture',
+            '[class*="lesson"]', '[class*="lecture"]', '[class*="episode"]',
+            '[class*="course-item"]', '[class*="video-item"]', 'li[class*="video"]'
+        ];
+
+        courseSelectors.forEach(selector => {
+            document.querySelectorAll(selector).forEach(container => {
+                container.querySelectorAll('a[href]').forEach(link => {
+                    const url = resolveUrl(link.href);
+                    if (!url || !url.startsWith('http')) {
+                        return;
+                    }
+
+                    const linkText = link.textContent?.trim() || link.title || container.textContent?.trim() || 'Video';
+
+                    if (/^(next|prev|previous|back|home|menu|more)$/i.test(linkText)) {
+                        return;
+                    }
+
+                    if (!isVideoLink(url, linkText, link)) {
+                        return;
+                    }
+
+                    resources.add(JSON.stringify({
+                        url: url,
+                        type: 'video',
+                        filename: generateFilename(url, linkText),
+                        element: 'course-video-link',
+                        text: linkText,
+                        extension: getLinkExtension(url, 'video', linkText)
+                    }));
+                });
+            });
+        });
+    }
 
     // Scan for images
     document.querySelectorAll('img').forEach(img => {
@@ -406,6 +895,50 @@ function scanPageForResources() {
         });
     }
 
+    // Scan for other downloadable files in data attributes on non-link elements
+    function scanOtherFiles() {
+        document.querySelectorAll('[data-download], [data-file], [data-document]').forEach(el => {
+            if (el.tagName === 'A') return;
+
+            ['data-download', 'data-file', 'data-document', 'data-url', 'data-src'].forEach(attr => {
+                const url = resolveUrl(el.getAttribute(attr));
+                if (url && url.startsWith('http') && isOtherFileUrl(url) && !isArchiveUrl(url)) {
+                    const text = el.textContent?.trim() || el.title || el.getAttribute('aria-label') || 'File';
+                    resources.add(JSON.stringify({
+                        url: url,
+                        type: 'other',
+                        filename: generateFilename(url, text),
+                        element: 'other-data',
+                        text: text,
+                        extension: getFileExtension(url) || 'file'
+                    }));
+                }
+            });
+        });
+    }
+
+    // Scan for compressed/archive files in data attributes on non-link elements
+    function scanArchiveFiles() {
+        document.querySelectorAll('[data-download], [data-file], [data-archive], [data-zip]').forEach(el => {
+            if (el.tagName === 'A') return;
+
+            ['data-download', 'data-file', 'data-archive', 'data-zip', 'data-url', 'data-src'].forEach(attr => {
+                const url = resolveUrl(el.getAttribute(attr));
+                if (url && url.startsWith('http') && isArchiveUrl(url)) {
+                    const text = el.textContent?.trim() || el.title || el.getAttribute('aria-label') || 'Archive';
+                    resources.add(JSON.stringify({
+                        url: url,
+                        type: 'archive',
+                        filename: generateFilename(url, text),
+                        element: 'archive-data',
+                        text: text,
+                        extension: getFileExtension(url) || 'zip'
+                    }));
+                }
+            });
+        });
+    }
+
     // Scan for subtitle and caption files
     function scanSubtitleFiles() {
         // Look for track elements (common for subtitles)
@@ -428,23 +961,16 @@ function scanPageForResources() {
         // Look for subtitle files in links
         document.querySelectorAll('a[href]').forEach(link => {
             const url = resolveUrl(link.href);
-            const href = link.href.toLowerCase();
-            const text = link.textContent?.trim().toLowerCase() || '';
+            const linkText = link.textContent?.trim() || link.title || 'Subtitle';
 
-            // Check if it's a subtitle file
-            if (url && (
-                /\.(srt|vtt|ass|ssa|sub|sbv|ttml|dfxp)$/i.test(href) ||
-                /subtitle|caption|sub/i.test(text) ||
-                /subtitle|caption|sub/i.test(link.title || '')
-            )) {
-                const linkText = link.textContent?.trim() || link.title || 'Subtitle';
+            if (url && isSubtitleLink(url, linkText, link)) {
                 resources.add(JSON.stringify({
                     url: url,
                     type: 'subtitle',
                     filename: generateFilename(url, linkText),
                     element: 'subtitle-link',
                     text: linkText,
-                    extension: getFileExtension(url) || 'srt'
+                    extension: getLinkExtension(url, 'subtitle', linkText)
                 }));
             }
         });
@@ -542,7 +1068,10 @@ function scanPageForResources() {
     scanBlobUrls();
     scanEmbeddedPlayers();
     scanStreamingManifests();
-    scanSubtitleFiles(); // Add subtitle scanning
+    scanArchiveFiles();
+    scanOtherFiles();
+    scanSubtitleFiles();
+    scanCourseVideoLinks();
 
     // Scan for picture sources
     document.querySelectorAll('source').forEach(source => {
@@ -592,79 +1121,411 @@ function scanPageForResources() {
         }
     });
 
-    // Convert Set back to array and parse JSON
-    return Array.from(resources).map(r => JSON.parse(r));
+    const TYPE_PRIORITY = {
+        video: 6,
+        audio: 5,
+        archive: 4,
+        other: 3,
+        subtitle: 7,
+        image: 1,
+        link: 0
+    };
+
+    const byUrl = new Map();
+    Array.from(resources).map(entry => JSON.parse(entry)).forEach((resource) => {
+        const existing = byUrl.get(resource.url);
+        if (!existing || (TYPE_PRIORITY[resource.type] || 0) > (TYPE_PRIORITY[existing.type] || 0)) {
+            byUrl.set(resource.url, resource);
+        }
+    });
+
+    return Array.from(byUrl.values());
 }
 
-// Handle downloading multiple resources
-async function handleDownloadResources(resources, sendResponse) {
+// Handle downloading multiple resources (runs in background; state persists per tab)
+async function handleDownloadResources(tabId, resources, sendResponse) {
     try {
-        downloadProgress.clear();
-        const downloadPromises = [];
-
-        for (const resource of resources) {
-            const downloadPromise = downloadResource(resource);
-            downloadPromises.push(downloadPromise);
+        if (!tabId) {
+            sendResponse({ success: false, error: 'No tab ID provided' });
+            return;
+        }
+        if (!resources?.length) {
+            sendResponse({ success: false, error: 'No resources to download' });
+            return;
         }
 
-        // Wait for all downloads to complete
-        const results = await Promise.allSettled(downloadPromises);
+        const existing = await getDownloadSessionState(tabId);
+        if (existing && ['downloading', 'paused'].includes(existing.status)) {
+            sendResponse({ success: false, error: 'This tab already has an active download' });
+            return;
+        }
 
-        const successful = results.filter(r => r.status === 'fulfilled').length;
-        const failed = results.filter(r => r.status === 'rejected').length;
-
-        sendResponse({
-            success: true,
-            downloaded: successful,
-            failed: failed,
-            total: resources.length
+        await setDownloadSessionState(tabId, {
+            status: 'downloading',
+            total: resources.length,
+            completed: 0,
+            failed: 0,
+            percent: 0,
+            currentIndex: 0,
+            resources,
+            currentFile: '',
+            activeChromeDownloadId: null,
+            message: `Starting download of ${resources.length} files...`,
+            startedAt: Date.now(),
+            finishedAt: null,
+            licenseRecorded: false
         });
 
-        // Stop keep-alive after operations complete
-        setTimeout(stopKeepAlive, 5000);
+        sendResponse({ success: true, started: true, total: resources.length });
 
+        runDownloadBatchFromSession(tabId).catch(async (error) => {
+            if (error instanceof DownloadCancelledError) {
+                return;
+            }
+            console.error('Download batch error:', error);
+            await setDownloadSessionState(tabId, {
+                status: 'error',
+                message: `Download error: ${error.message}`,
+                finishedAt: Date.now()
+            });
+        });
     } catch (error) {
-        console.error('Error downloading resources:', error);
-        sendResponse({
-            success: false,
-            error: error.message
-        });
+        console.error('Error starting downloads:', error);
+        sendResponse({ success: false, error: error.message });
     }
 }
 
-// Download a single resource
-async function downloadResource(resource) {
-    return new Promise(async (resolve, reject) => {
-        const downloadId = `download_${Date.now()}_${Math.random()}`;
-        downloadProgress.set(downloadId, { status: 'starting', filename: resource.filename });
-
-        try {
-            // Get user settings
-            const settings = await getDownloadSettings();
-
-            // Generate final filename with settings applied
-            const finalFilename = await generateDownloadFilename(resource, settings);
-
-            console.log('Downloading:', resource.url, 'as', finalFilename);
-
-            chrome.downloads.download({
-                url: resource.url,
-                filename: finalFilename,
-                conflictAction: settings.avoidDuplicates ? 'uniquify' : 'overwrite'
-            }, (id) => {
-                if (chrome.runtime.lastError) {
-                    downloadProgress.set(downloadId, { status: 'failed', error: chrome.runtime.lastError.message });
-                    reject(new Error(chrome.runtime.lastError.message));
-                } else {
-                    downloadProgress.set(downloadId, { status: 'completed', chromeDownloadId: id });
-                    resolve(id);
-                }
-            });
-        } catch (error) {
-            downloadProgress.set(downloadId, { status: 'failed', error: error.message });
-            reject(error);
+async function handleClearDownloadSession(tabId, onlyIfFinished, sendResponse) {
+    try {
+        if (!tabId) {
+            sendResponse({ success: false, error: 'No tab ID provided' });
+            return;
         }
+
+        const session = await getDownloadSessionState(tabId);
+        if (!session) {
+            sendResponse({ success: true });
+            return;
+        }
+
+        if (onlyIfFinished && ['downloading', 'paused'].includes(session.status)) {
+            sendResponse({ success: true, skipped: true });
+            return;
+        }
+
+        await clearDownloadSessionState(tabId);
+        sendResponse({ success: true });
+    } catch (error) {
+        console.error('Error clearing download session:', error);
+        sendResponse({ success: false, error: error.message });
+    }
+}
+
+async function waitWhilePaused(tabId) {
+    while (true) {
+        const session = await getDownloadSessionState(tabId);
+        if (!session) {
+            return;
+        }
+        if (session.status === 'cancelled') {
+            throw new DownloadCancelledError();
+        }
+        if (session.status !== 'paused') {
+            return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+}
+
+async function handlePauseDownload(tabId, sendResponse) {
+    try {
+        const session = await getDownloadSessionState(tabId);
+        if (!session || session.status !== 'downloading') {
+            sendResponse({ success: false, error: 'No active download to pause' });
+            return;
+        }
+
+        if (session.activeChromeDownloadId) {
+            await chrome.downloads.pause(session.activeChromeDownloadId);
+        }
+
+        const done = (session.completed || 0) + (session.failed || 0);
+        await setDownloadSessionState(tabId, {
+            status: 'paused',
+            message: `Paused — ${done} of ${session.total} files processed`
+        });
+
+        sendResponse({ success: true });
+    } catch (error) {
+        console.error('Error pausing download:', error);
+        sendResponse({ success: false, error: error.message });
+    }
+}
+
+async function handleResumeDownload(tabId, sendResponse) {
+    try {
+        const session = await getDownloadSessionState(tabId);
+        if (!session || session.status !== 'paused') {
+            sendResponse({ success: false, error: 'No paused download to resume' });
+            return;
+        }
+
+        if (session.activeChromeDownloadId) {
+            try {
+                await chrome.downloads.resume(session.activeChromeDownloadId);
+            } catch (error) {
+                console.warn('Could not resume active Chrome download:', error);
+            }
+        }
+
+        await setDownloadSessionState(tabId, {
+            status: 'downloading',
+            message: `Resuming download (${(session.completed || 0) + (session.failed || 0)} of ${session.total} done)...`
+        });
+
+        if (!isBatchRunning(tabId)) {
+            runDownloadBatchFromSession(tabId).catch(async (error) => {
+                if (error instanceof DownloadCancelledError) {
+                    return;
+                }
+                console.error('Download batch error:', error);
+                await setDownloadSessionState(tabId, {
+                    status: 'error',
+                    message: `Download error: ${error.message}`,
+                    finishedAt: Date.now()
+                });
+            });
+        }
+
+        sendResponse({ success: true });
+    } catch (error) {
+        console.error('Error resuming download:', error);
+        sendResponse({ success: false, error: error.message });
+    }
+}
+
+async function handleCancelDownload(tabId, sendResponse) {
+    try {
+        const session = await getDownloadSessionState(tabId);
+        if (!session || !['downloading', 'paused'].includes(session.status)) {
+            sendResponse({ success: false, error: 'No active download to cancel' });
+            return;
+        }
+
+        if (session.activeChromeDownloadId) {
+            try {
+                await chrome.downloads.cancel(session.activeChromeDownloadId);
+            } catch (error) {
+                console.warn('Could not cancel active Chrome download:', error);
+            }
+        }
+
+        removeDownloadListenersForTab(tabId);
+
+        const completed = session.completed || 0;
+        const failed = session.failed || 0;
+        await setDownloadSessionState(tabId, {
+            status: 'cancelled',
+            activeChromeDownloadId: null,
+            message: `Cancelled — ${completed} downloaded, ${failed} failed, ${Math.max(0, session.total - completed - failed)} skipped`,
+            finishedAt: Date.now()
+        });
+
+        maybeStopKeepAlive();
+        sendResponse({ success: true });
+    } catch (error) {
+        console.error('Error cancelling download:', error);
+        sendResponse({ success: false, error: error.message });
+    }
+}
+
+async function runDownloadBatchFromSession(tabId) {
+    if (isBatchRunning(tabId)) {
+        return;
+    }
+
+    setBatchRunning(tabId, true);
+    startKeepAlive();
+
+    try {
+        let session = await getDownloadSessionState(tabId);
+        const resources = session?.resources;
+        if (!resources?.length) {
+            return;
+        }
+
+        let currentIndex = session.currentIndex || 0;
+        let completed = session.completed || 0;
+        let failed = session.failed || 0;
+        const total = session.total || resources.length;
+
+        for (let i = currentIndex; i < resources.length; i++) {
+            await waitWhilePaused(tabId);
+
+            session = await getDownloadSessionState(tabId);
+            if (session?.status === 'cancelled') {
+                break;
+            }
+
+            const resource = resources[i];
+            const displayName = resource.filename || resource.text || `File ${i + 1}`;
+
+            await setDownloadSessionState(tabId, {
+                status: 'downloading',
+                total,
+                completed,
+                failed,
+                currentIndex: i,
+                percent: Math.round(((completed + failed) / total) * 100),
+                currentFile: displayName,
+                message: `Downloading ${i + 1} of ${total}: ${displayName}`
+            });
+
+            try {
+                await downloadResourceAndWait(tabId, resource);
+                completed++;
+            } catch (error) {
+                if (error instanceof DownloadCancelledError) {
+                    break;
+                }
+                failed++;
+                console.error('Download failed:', displayName, error);
+            }
+
+            const done = completed + failed;
+            await setDownloadSessionState(tabId, {
+                status: 'downloading',
+                total,
+                completed,
+                failed,
+                currentIndex: i + 1,
+                activeChromeDownloadId: null,
+                percent: Math.round((done / total) * 100),
+                currentFile: displayName,
+                message: `Downloaded ${done} of ${total} (${Math.round((done / total) * 100)}%)`
+            });
+
+            session = await getDownloadSessionState(tabId);
+            if (session?.status === 'cancelled') {
+                break;
+            }
+        }
+
+        session = await getDownloadSessionState(tabId);
+        if (session?.status === 'cancelled') {
+            return;
+        }
+
+        await setDownloadSessionState(tabId, {
+            status: 'complete',
+            total,
+            completed,
+            failed,
+            currentIndex: total,
+            percent: 100,
+            currentFile: '',
+            activeChromeDownloadId: null,
+            message: `Complete! ${completed} successful, ${failed} failed out of ${total}`,
+            finishedAt: Date.now(),
+            licenseRecorded: false
+        });
+    } finally {
+        setBatchRunning(tabId, false);
+        maybeStopKeepAlive();
+    }
+}
+
+async function runDownloadBatch(tabId, resources) {
+    await setDownloadSessionState(tabId, { resources, currentIndex: 0 });
+    return runDownloadBatchFromSession(tabId);
+}
+
+async function downloadResourceAndWait(tabId, resource) {
+    const settings = await getDownloadSettings();
+    const finalFilename = await generateDownloadFilename(resource, settings);
+    const session = await getDownloadSessionState(tabId);
+    if (session?.status === 'cancelled') {
+        throw new DownloadCancelledError();
+    }
+
+    const total = session?.total || 1;
+    const baseDone = (session?.completed || 0) + (session?.failed || 0);
+
+    return new Promise((resolve, reject) => {
+        chrome.downloads.download({
+            url: resource.url,
+            filename: finalFilename,
+            conflictAction: settings.avoidDuplicates ? 'uniquify' : 'overwrite'
+        }, (chromeDownloadId) => {
+            if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+                return;
+            }
+
+            setDownloadSessionState(tabId, { activeChromeDownloadId: chromeDownloadId });
+
+            const trackerId = `download_${Date.now()}_${Math.random()}`;
+            downloadProgress.set(trackerId, {
+                status: 'downloading',
+                filename: finalFilename,
+                chromeDownloadId,
+                tabId
+            });
+
+            const listener = (downloadDelta) => {
+                if (downloadDelta.id !== chromeDownloadId) {
+                    return;
+                }
+
+                getDownloadSessionState(tabId).then((currentSession) => {
+                    if (currentSession?.status === 'cancelled') {
+                        chrome.downloads.onChanged.removeListener(listener);
+                        chromeDownloadListeners.delete(chromeDownloadId);
+                        reject(new DownloadCancelledError());
+                    }
+                });
+
+                if (downloadDelta.bytesReceived && downloadDelta.totalBytes &&
+                    downloadDelta.totalBytes.current > 0) {
+                    const fileProgress = downloadDelta.bytesReceived.current / downloadDelta.totalBytes.current;
+                    const overall = Math.min(99, Math.round(((baseDone + fileProgress) / total) * 100));
+                    setDownloadSessionState(tabId, {
+                        percent: overall,
+                        message: `Downloading ${baseDone + 1} of ${total}: ${finalFilename} (${Math.round(fileProgress * 100)}%)`
+                    });
+                }
+
+                if (downloadDelta.state?.current === 'complete') {
+                    chrome.downloads.onChanged.removeListener(listener);
+                    chromeDownloadListeners.delete(chromeDownloadId);
+                    downloadProgress.set(trackerId, { status: 'completed', filename: finalFilename, chromeDownloadId });
+                    setDownloadSessionState(tabId, { activeChromeDownloadId: null });
+                    resolve(chromeDownloadId);
+                } else if (downloadDelta.state?.current === 'interrupted') {
+                    chrome.downloads.onChanged.removeListener(listener);
+                    chromeDownloadListeners.delete(chromeDownloadId);
+                    downloadProgress.set(trackerId, { status: 'failed', filename: finalFilename, chromeDownloadId });
+                    setDownloadSessionState(tabId, { activeChromeDownloadId: null });
+
+                    getDownloadSessionState(tabId).then((currentSession) => {
+                        if (currentSession?.status === 'cancelled') {
+                            reject(new DownloadCancelledError());
+                        } else {
+                            reject(new Error('Download interrupted'));
+                        }
+                    });
+                }
+            };
+
+            chrome.downloads.onChanged.addListener(listener);
+            chromeDownloadListeners.set(chromeDownloadId, { listener, tabId: Number(tabId) });
+        });
     });
+}
+
+// Legacy single-resource helper (kept for compatibility)
+async function downloadResource(resource) {
+    return downloadResourceAndWait(resource);
 }
 
 // Get download settings from storage
@@ -732,6 +1593,12 @@ async function generateDownloadFilename(resource, settings) {
             case 'subtitle':
                 typeFolder = 'subtitles';
                 break;
+            case 'archive':
+                typeFolder = 'archives';
+                break;
+            case 'other':
+                typeFolder = 'other';
+                break;
             default:
                 typeFolder = 'files';
         }
@@ -766,10 +1633,9 @@ async function generateDownloadFilename(resource, settings) {
     return filename;
 }
 
-// Listen for download completion events
+// Listen for download completion events (legacy tracker sync)
 chrome.downloads.onChanged.addListener((downloadDelta) => {
-    // Update progress information
-    for (let [key, value] of downloadProgress.entries()) {
+    for (const [key, value] of downloadProgress.entries()) {
         if (value.chromeDownloadId === downloadDelta.id) {
             if (downloadDelta.state?.current === 'complete') {
                 downloadProgress.set(key, { ...value, status: 'completed' });
@@ -784,3 +1650,23 @@ chrome.downloads.onChanged.addListener((downloadDelta) => {
 chrome.runtime.onInstalled.addListener(() => {
     console.log('Webpage Resource Downloader extension installed');
 });
+
+async function recoverDownloadBatchIfNeeded() {
+    try {
+        const sessions = await getAllDownloadSessions();
+        for (const [tabId, session] of Object.entries(sessions)) {
+            if (session?.status === 'downloading' && session.resources?.length && !isBatchRunning(tabId)) {
+                runDownloadBatchFromSession(Number(tabId)).catch(async (error) => {
+                    if (error instanceof DownloadCancelledError) {
+                        return;
+                    }
+                    console.error('Recovered download batch error:', error);
+                });
+            }
+        }
+    } catch (error) {
+        console.error('Error recovering download batch:', error);
+    }
+}
+
+recoverDownloadBatchIfNeeded();
