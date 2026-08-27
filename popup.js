@@ -428,17 +428,13 @@ class ResourceDownloader {
     }
 
     async handleDownloadComplete(session) {
-        if (session.licenseRecorded) {
-            return;
-        }
-
+        // Usage is recorded by the background worker as each file finishes, so
+        // the popup only needs to refresh what it shows.
         if (this.licenseManager && session.completed > 0) {
             try {
-                await this.licenseManager.recordDownload(session.completed);
-                await this.sendTabMessage({ action: 'markSessionLicenseRecorded' });
                 await this.updateLicenseStatus();
             } catch (error) {
-                console.error('Error recording download:', error);
+                console.error('Error refreshing license status:', error);
             }
         }
 
@@ -475,7 +471,7 @@ class ResourceDownloader {
                     tabId: tab.id
                 }),
                 new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('Scan timeout after 10 seconds')), 10000)
+                    setTimeout(() => reject(new Error('Scan timeout after 25 seconds')), 25000)
                 )
             ]);
 
@@ -726,12 +722,8 @@ class ResourceDownloader {
         const extension = resource.extension ? resource.extension.toUpperCase() : 'FILE';
 
         let platformType = resource.type;
-        if (resource.element === 'youtube-embed' || resource.element === 'youtube-player') {
-            platformType = 'youtube';
-        } else if (resource.element === 'vimeo-embed') {
+        if (resource.element === 'vimeo-stream') {
             platformType = 'vimeo';
-        } else if (resource.element === 'twitch-embed') {
-            platformType = 'twitch';
         } else if (resource.element === 'blob-media') {
             platformType = 'blob';
         } else if (resource.element === 'streaming-manifest') {
@@ -855,12 +847,16 @@ class ResourceDownloader {
                 return;
             }
 
+            if (response?.limit) {
+                this.isDownloading = false;
+                this.updateDownloadingUI(false);
+                this.showImprovedLimitWarning(response.limit);
+                await this.updateLicenseStatus();
+                return;
+            }
+
             if (response && response.success) {
                 const { downloaded, failed, total } = response;
-
-                if (this.licenseManager) {
-                    await this.licenseManager.recordDownload(downloaded);
-                }
 
                 this.downloadStatus.textContent =
                     `Download complete! ${downloaded} successful, ${failed} failed out of ${total} total`;
@@ -1089,10 +1085,16 @@ class ResourceDownloader {
 
         if (isPro) {
             this.licenseStatus.innerHTML = '<span style="color: #4CAF50;">✓ Pro License Active - Unlimited Downloads</span>';
+        } else if (usage?.isTrial) {
+            const daysLeft = usage.trialDaysRemaining || 0;
+            this.licenseStatus.innerHTML = `<span style="color: #FF9800;">✓ Trial Active - ${daysLeft} day${daysLeft === 1 ? '' : 's'} left</span>`;
         } else {
             const downloadsUsed = usage?.dailyDownloads || 0;
             const totalDownloads = usage?.totalDownloads || 0;
-            const remaining = 25 - downloadsUsed;
+            const dailyLimit = usage?.dailyLimit || 25;
+            const remaining = Math.max(0, dailyLimit - downloadsUsed);
+            const usedPercent = Math.min(100, (downloadsUsed / dailyLimit) * 100);
+            const expiredNote = usage?.isTrialExpired ? ' • Trial ended' : '';
 
             let progressMessage = '';
             if (totalDownloads > 100) {
@@ -1105,9 +1107,9 @@ class ResourceDownloader {
 
             this.licenseStatus.innerHTML = `
                 <div style="color: #2196F3; font-size: 12px;">
-                    Free Plan: ${downloadsUsed}/25 used today
+                    Free Plan: ${downloadsUsed}/${dailyLimit} used today${expiredNote}
                     <div style="background: #E3F2FD; border-radius: 10px; height: 6px; margin: 4px 0;">
-                        <div style="background: #2196F3; height: 100%; border-radius: 10px; width: ${Math.min(100, (downloadsUsed / 25) * 100)}%; transition: width 0.3s ease;"></div>
+                        <div style="background: #2196F3; height: 100%; border-radius: 10px; width: ${usedPercent}%; transition: width 0.3s ease;"></div>
                     </div>
                     ${remaining} downloads left today${progressMessage}
                 </div>
@@ -1118,7 +1120,26 @@ class ResourceDownloader {
             this.upgradeBtn.style.display = isPro ? 'none' : 'block';
         }
         if (this.trialBtn) {
-            this.trialBtn.style.display = !isActive ? 'block' : 'none';
+            const trialAvailable = !isActive && !usage?.isTrial && !usage?.isTrialExpired;
+            this.trialBtn.style.display = trialAvailable ? 'block' : 'none';
+        }
+    }
+
+    showLicenseActivationError(modal, message) {
+        const errorEl = modal.querySelector('#license-activation-error');
+        if (!errorEl) {
+            this.showMessage(message, 'error');
+            return;
+        }
+        errorEl.textContent = message;
+        errorEl.style.display = 'block';
+    }
+
+    clearLicenseActivationError(modal) {
+        const errorEl = modal.querySelector('#license-activation-error');
+        if (errorEl) {
+            errorEl.textContent = '';
+            errorEl.style.display = 'none';
         }
     }
 
@@ -1210,6 +1231,10 @@ class ResourceDownloader {
                         <button id="start-trial" class="trial-btn">Start 7-Day Free Trial</button>
                         <button id="purchase-pro" class="upgrade-btn">Purchase Pro License</button>
                     </div>
+                    <p style="text-align: center; margin: 12px 0 0; font-size: 12px;">
+                        Already purchased?
+                        <button id="have-license-key" class="btn-link" type="button">Enter your license key</button>
+                    </p>
                 </div>
             </div>
         `;
@@ -1229,21 +1254,25 @@ class ResourceDownloader {
                 this.showMessage('7-day free trial activated!', 'success');
             } catch (error) {
                 console.error('Error starting trial:', error);
-                this.showMessage('Failed to start trial. Please try again.', 'error');
+                this.showMessage(error.message || 'Failed to start trial. Please try again.', 'error');
             }
+        });
+
+        modal.querySelector('#have-license-key').addEventListener('click', () => {
+            document.body.removeChild(modal);
+            this.showActivationModal();
         });
 
         modal.querySelector('#purchase-pro').addEventListener('click', async () => {
             try {
-                const paymentResult = await this.licenseManager.processPayment('gumroad');
-
-                if (paymentResult.success) {
-                    document.body.removeChild(modal);
-                    this.showPaymentInstructions(paymentResult);
-                }
+                // Opening the checkout tab closes this popup, so the key entry
+                // form is shown first and stays reachable when the user returns.
+                document.body.removeChild(modal);
+                this.showActivationModal();
+                await this.licenseManager.processPayment('gumroad');
             } catch (error) {
                 console.error('Payment error:', error);
-                this.showMessage('Payment failed. Please try again.', 'error');
+                this.showMessage(error.message || 'Could not open checkout. Please try again.', 'error');
             }
         });
 
@@ -1290,67 +1319,86 @@ class ResourceDownloader {
         }, 5000);
     }
 
-    showPaymentInstructions(paymentResult) {
+    showActivationModal() {
         const modal = document.createElement('div');
         modal.className = 'upgrade-modal-overlay';
         modal.innerHTML = `
             <div class="upgrade-modal">
                 <div class="modal-header">
-                    <h3>Complete Your Purchase</h3>
+                    <h3>Activate Pro License</h3>
                     <button class="modal-close">&times;</button>
                 </div>
                 <div class="modal-content">
-                    <p>${paymentResult.message}</p>
+                    <p style="font-size: 13px;">
+                        After buying on Gumroad you receive a license key by email.
+                        Paste it below to unlock Pro. You can reopen this window any
+                        time from the Upgrade button.
+                    </p>
 
-                    <div style="margin: 20px 0; padding: 15px; background: #f0f8ff; border-radius: 8px;">
-                        <h4>Step 1:</h4>
-                        <p>Complete your purchase on the Gumroad page that just opened.</p>
+                    <input type="text" id="activation-license-key" placeholder="Enter license key..."
+                           style="width: 100%; padding: 10px; margin: 12px 0 0; border: 1px solid #ccc; border-radius: 4px;">
 
-                        <h4>Step 2:</h4>
-                        <p>You'll receive a license key via email after payment.</p>
+                    <p id="license-activation-error" style="display: none; color: #F44336; font-size: 12px; margin: 8px 0 0;"></p>
 
-                        <h4>Step 3:</h4>
-                        <p>Enter your license key below to activate Pro features:</p>
-
-                        <input type="text" id="payment-license-key" placeholder="Enter license key..."
-                               style="width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px;">
-
-                        <button id="activate-payment-license" class="upgrade-btn" style="width: 100%;">
-                            Activate Pro License
-                        </button>
-                    </div>
+                    <button id="activate-license-submit" class="upgrade-btn" style="width: 100%; margin-top: 12px;">
+                        Activate Pro License
+                    </button>
                 </div>
             </div>
         `;
 
         document.body.appendChild(modal);
 
-        modal.querySelector('.modal-close').addEventListener('click', () => {
-            document.body.removeChild(modal);
-        });
+        const closeModal = () => {
+            if (modal.parentNode) {
+                document.body.removeChild(modal);
+            }
+        };
 
-        modal.querySelector('#activate-payment-license').addEventListener('click', async () => {
-            const licenseKey = modal.querySelector('#payment-license-key').value.trim();
+        const keyInput = modal.querySelector('#activation-license-key');
+        keyInput.focus();
+
+        const submit = async () => {
+            const licenseKey = keyInput.value.trim();
+            this.clearLicenseActivationError(modal);
 
             if (!licenseKey) {
-                this.showMessage('Please enter your license key.', 'error');
+                this.showLicenseActivationError(modal, 'Please enter your license key.');
                 return;
             }
+
+            const submitBtn = modal.querySelector('#activate-license-submit');
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Verifying...';
 
             try {
                 await this.licenseManager.activateLicense(licenseKey);
                 await this.updateLicenseStatus();
-                document.body.removeChild(modal);
-                this.showMessage('🎉 Pro license activated! Enjoy unlimited downloads!', 'success');
+                await this.updateDownloadButtonText();
+                closeModal();
+                this.showMessage('Pro license activated! Enjoy unlimited downloads.', 'success');
             } catch (error) {
                 console.error('License activation error:', error);
-                this.showMessage('Invalid license key. Please check and try again.', 'error');
+                this.showLicenseActivationError(
+                    modal,
+                    error.message || 'Invalid license key. Please check and try again.'
+                );
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Activate Pro License';
+            }
+        };
+
+        modal.querySelector('.modal-close').addEventListener('click', closeModal);
+        modal.querySelector('#activate-license-submit').addEventListener('click', submit);
+        keyInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                submit();
             }
         });
 
         modal.addEventListener('click', (event) => {
             if (event.target === modal) {
-                document.body.removeChild(modal);
+                closeModal();
             }
         });
     }

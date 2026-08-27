@@ -8,7 +8,6 @@ A powerful Chrome extension that scans web pages for all downloadable resources 
 - `<a>` tags (href attributes)
 - Images (`<img>` src attributes)
 - Videos and audio (`<video>` and `<audio>` tags with sources)
-- **YouTube videos** (embedded iframes and player divs)
 - **Vimeo videos** (embedded content)
 - **Twitch streams** (embedded players)
 - **Blob URLs** (dynamically generated media)
@@ -115,11 +114,14 @@ The extension references icon files that you can create:
 ```
 downloader/
 ├── manifest.json          # Extension configuration (Manifest V3)
-├── background.js          # Service worker for downloads and communication
-├── content.js             # Content script for page interaction
+├── background.js          # Service worker: page scanning, downloads, quota enforcement
+├── license.js             # Freemium limits and Gumroad license verification
+├── browser-compatibility.js # Browser API abstraction layer
 ├── popup.html             # Popup interface HTML
 ├── popup.css              # Popup styling
 ├── popup.js               # Popup functionality
+├── options.html           # Settings page
+├── options.js             # Settings and license management
 ├── icons/                 # Extension icons (create your own)
 │   ├── icon16.png
 │   ├── icon32.png
@@ -173,10 +175,19 @@ downloader/
 
 ### Code Organization
 - **manifest.json**: Extension configuration and permissions
-- **background.js**: Handles downloads and inter-script communication
-- **content.js**: Minimal content script for page access
+- **background.js**: Injects the page scanner, runs download batches, enforces free-tier quotas
+- **license.js**: Free/Pro limits, trial handling, Gumroad license verification
 - **popup.js**: Main UI logic and resource management
 - **popup.css**: Responsive styling with modern design
+
+Downloads run in the background worker and are counted there, so quotas still
+apply when the popup is closed mid-batch.
+
+### Tests
+```bash
+node scripts/test_license.js     # licensing, trial expiry, Gumroad edge cases
+node scripts/test_background.js  # quota enforcement and packaging hygiene
+```
 
 ### Key Features Implementation
 - **Resource Detection**: Comprehensive DOM scanning in background.js

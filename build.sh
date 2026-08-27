@@ -1,92 +1,106 @@
 #!/bin/bash
-# Build script for cross-browser extension packaging
+# Build script for packaging the Chrome extension.
+#
+# Firefox is intentionally not packaged here. background.js depends on
+# chrome.scripting.executeScript and promise-returning chrome.storage, neither
+# of which exist in the Manifest V2 background context Firefox would use, so a
+# Firefox build would install but fail on every scan. See manifest_firefox.json.
 
-echo "🚀 Building Webpage Resource Downloader for Chrome and Firefox"
+set -euo pipefail
 
-# Create build directories
+VERSION=$(node -e "console.log(require('./manifest.json').version)")
+
+echo "Building Webpage Resource Downloader v${VERSION} for Chrome"
+
+rm -rf build
 mkdir -p build/chrome
-mkdir -p build/firefox
 
-# Copy common files
-echo "📁 Copying common files..."
+echo "Copying extension files..."
 cp -r icons build/chrome/
-cp -r icons build/firefox/
-cp *.html build/chrome/
-cp *.html build/firefox/
-cp *.css build/chrome/
-cp *.css build/firefox/
-cp *.js build/chrome/
-cp *.js build/firefox/
-cp *.md build/chrome/
-cp *.md build/firefox/
-
-# Copy browser-specific manifests
-echo "📄 Setting up browser-specific manifests..."
 cp manifest.json build/chrome/
-cp manifest_firefox.json build/firefox/manifest.json
+cp popup.html options.html build/chrome/
+cp popup.css build/chrome/
+cp background.js popup.js options.js license.js browser-compatibility.js build/chrome/
+cp PRIVACY_POLICY.md build/chrome/ 2>/dev/null || true
 
-# Create Chrome package
-echo "📦 Creating Chrome extension package..."
-cd build/chrome
-zip -r ../chrome-extension.zip .
-cd ../..
+echo "Verifying the package contains every file the manifest references..."
+node - <<'NODE'
+const fs = require('fs');
+const path = require('path');
 
-# Create Firefox package
-echo "📦 Creating Firefox extension package..."
-cd build/firefox
-zip -r ../firefox-extension.xpi .
-cd ../..
+const dir = path.join('build', 'chrome');
+const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+const required = new Set();
 
-# Create release notes
-echo "📋 Creating release documentation..."
-cat > build/RELEASE_NOTES.md << 'EOF'
-# Webpage Resource Downloader v1.0.0
+const add = (file) => { if (file) required.add(file); };
+add(manifest.background?.service_worker);
+add(manifest.action?.default_popup);
+add(manifest.options_page);
+Object.values(manifest.action?.default_icon || {}).forEach(add);
+Object.values(manifest.icons || {}).forEach(add);
+(manifest.content_scripts || []).forEach((entry) => (entry.js || []).forEach(add));
 
-## 🌐 Cross-Browser Support
-- ✅ Chrome Web Store ready (Manifest V3)
-- ✅ Firefox Add-ons ready (Manifest V2)
-- ✅ Cross-browser API compatibility layer
+// Scripts pulled in by HTML pages and by importScripts must ship too.
+for (const page of [manifest.action?.default_popup, manifest.options_page].filter(Boolean)) {
+    const html = fs.readFileSync(path.join(dir, page), 'utf8');
+    for (const match of html.matchAll(/<script src="([^"]+)"/g)) add(match[1]);
+    for (const match of html.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)) add(match[1]);
+}
+const worker = fs.readFileSync(path.join(dir, manifest.background.service_worker), 'utf8');
+const importMatch = worker.match(/importScripts\(([^)]*)\)/);
+if (importMatch) {
+    for (const match of importMatch[1].matchAll(/'([^']+)'/g)) add(match[1]);
+}
 
-## 🎯 Features
-- **Free Tier**: 25 downloads/day, 3 files per batch
-- **Pro Tier**: Unlimited downloads, unlimited batch size
-- **7-Day Free Trial**
-- **Progress Tracking**: Daily/weekly/total statistics
-- **Smart Organization**: Auto-categorization by file type
-- **Custom Folders**: Save to organized subfolders
-- **Payment Integration**: Gumroad, Stripe, PayPal support
+const missing = [...required].filter((file) => !fs.existsSync(path.join(dir, file)));
+if (missing.length) {
+    console.error('Missing from package: ' + missing.join(', '));
+    process.exit(1);
+}
+console.log(`All ${required.size} referenced files are present.`);
+NODE
 
-## 📦 Installation Files
-- `chrome-extension.zip` - For Chrome Web Store
-- `firefox-extension.xpi` - For Firefox Add-ons
+echo "Creating Chrome Web Store package..."
+(cd build/chrome && zip -qr "../chrome-extension-v${VERSION}.zip" .)
 
-## 🔧 Browser Differences Handled
-- Service worker vs background scripts
-- Storage API promise vs callback patterns
-- Download API differences
-- Manifest format variations
-- Browser-specific restrictions
+cat > build/RELEASE_NOTES.md << EOF
+# Webpage Resource Downloader v${VERSION}
 
-## 💰 Monetization Ready
-- Freemium model implemented
-- Payment processing integrated
-- License key validation
-- User engagement tracking
+## Browser support
+- Chrome / Edge / Brave (Manifest V3)
+- Firefox is not currently supported
+
+## Tiers
+- Free: 25 downloads/day, 3 files per batch
+- Pro (\$4.99/month via Gumroad): unlimited downloads and batch size
+- 7-day free trial
+
+## Package
+- \`chrome-extension-v${VERSION}.zip\` — upload to the Chrome Web Store
 EOF
 
-echo "✅ Build complete!"
+# The store rejects a package with a nested or duplicate manifest, which is what
+# you get by zipping the project folder by hand. Fail loudly here instead.
+MANIFEST_COUNT=$(unzip -l "build/chrome-extension-v${VERSION}.zip" | grep -c "manifest.json")
+if [ "$MANIFEST_COUNT" -ne 1 ]; then
+    echo "ERROR: package contains ${MANIFEST_COUNT} manifests, expected exactly 1." >&2
+    exit 1
+fi
+if unzip -l "build/chrome-extension-v${VERSION}.zip" | grep -q " [^ ]*/manifest.json$"; then
+    echo "ERROR: manifest.json is nested in a folder; it must sit at the zip root." >&2
+    exit 1
+fi
+
+ZIP_PATH="$(cd build && pwd)/chrome-extension-v${VERSION}.zip"
+
 echo ""
-echo "📊 Package Details:"
-echo "Chrome: $(du -h build/chrome-extension.zip | cut -f1)"
-echo "Firefox: $(du -h build/firefox-extension.xpi | cut -f1)"
+echo "Build complete ($(du -h "build/chrome-extension-v${VERSION}.zip" | cut -f1)), one manifest at the zip root."
 echo ""
-echo "📁 Files created in build/ directory:"
-echo "  - chrome-extension.zip (Chrome Web Store)"
-echo "  - firefox-extension.xpi (Firefox Add-ons)"
-echo "  - RELEASE_NOTES.md"
+echo "UPLOAD THIS FILE — not the project folder, not a zip you make yourself:"
 echo ""
-echo "🎯 Next Steps:"
-echo "1. Test both packages in developer mode"
-echo "2. Set up payment provider (Gumroad recommended)"
-echo "3. Submit to Chrome Web Store: https://chrome.google.com/webstore/developer/dashboard"
-echo "4. Submit to Firefox Add-ons: https://addons.mozilla.org/developers/"
+echo "    ${ZIP_PATH}"
+echo ""
+echo "Next steps:"
+echo "  1. Load build/chrome unpacked in chrome://extensions to smoke test"
+echo "  2. Upload the file above: https://chrome.google.com/webstore/developer/dashboard"
+echo "  3. Justify 'downloads' + broad host access in the store listing"

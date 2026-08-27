@@ -1,4 +1,5 @@
 {
+    "_comment": "UNSUPPORTED / WORK IN PROGRESS. Not produced by build.sh. background.js requires chrome.scripting.executeScript and promise-based chrome.storage, which this MV2 background context does not provide. Porting requires routing every chrome.* call through browser-compatibility.js and replacing the scripting API with tabs.executeScript.",
     "manifest_version": 2,
     "name": "Webpage Resource Downloader",
     "version": "1.0.0",
@@ -36,14 +37,6 @@
     },
     
     "options_page": "options.html",
-    
-    "content_scripts": [{
-        "matches": ["<all_urls>"],
-        "js": ["content.js"],
-        "run_at": "document_idle"
-    }],
-    
-    "web_accessible_resources": ["content.js", "license.js", "browser-compatibility.js"],
     
     "browser_specific_settings": {
         "gecko": {

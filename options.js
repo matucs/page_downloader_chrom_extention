@@ -11,7 +11,11 @@ class SettingsManager {
             addWebsiteName: false
         };
 
+        this.browserCompat = window.BrowserCompat ? new BrowserCompat() : null;
         this.licenseManager = null;
+        this.statusHideTimer = null;
+        this.saveButtonResetTimer = null;
+        this.lastSavedAt = null;
         this.initializeLicenseManager();
         this.initializeElements();
         this.loadSettings();
@@ -57,6 +61,8 @@ class SettingsManager {
         this.resetFolderBtn = document.getElementById('resetFolderBtn');
         this.saveSettingsBtn = document.getElementById('saveSettingsBtn');
         this.saveStatus = document.getElementById('saveStatus');
+        this.settingsSummaryList = document.getElementById('settingsSummaryList');
+        this.settingsSummaryUpdated = document.getElementById('settingsSummaryUpdated');
 
         // Checkboxes
         this.createSubfoldersCheck = document.getElementById('createSubfolders');
@@ -99,6 +105,20 @@ class SettingsManager {
             }
         });
 
+        const storage = this.getStorageApi();
+        if (storage.onChanged) {
+            storage.onChanged.addListener((changes, areaName) => {
+                if (areaName !== 'sync') {
+                    return;
+                }
+                const settingKeys = Object.keys(this.defaultSettings);
+                const hasSettingChange = settingKeys.some((key) => key in changes);
+                if (hasSettingChange) {
+                    this.loadSettings();
+                }
+            });
+        }
+
         // License management events
         if (this.startTrialBtn) {
             this.startTrialBtn.addEventListener('click', () => this.startTrial());
@@ -134,14 +154,16 @@ class SettingsManager {
                 this.licenseStatus.className = 'license-status trial';
                 this.licenseType.textContent = 'Trial';
             } else {
-                this.licenseStatus.textContent = 'Free License (Limited)';
+                this.licenseStatus.textContent = usage.isTrialExpired
+                    ? 'Trial ended - Free License (Limited)'
+                    : 'Free License (Limited)';
                 this.licenseStatus.className = 'license-status free';
                 this.licenseType.textContent = 'Free';
             }
 
             // Update usage stats
             if (this.dailyDownloads) {
-                this.dailyDownloads.textContent = `${usage.dailyDownloads}/25`;
+                this.dailyDownloads.textContent = `${usage.dailyDownloads}/${usage.dailyLimit || 25}`;
             }
 
             // Add total downloads display if element exists
@@ -151,7 +173,8 @@ class SettingsManager {
             }
 
             // Update button visibility
-            this.startTrialBtn.style.display = !isActive ? 'block' : 'none';
+            const trialAvailable = !isActive && !isTrial && !usage.isTrialExpired;
+            this.startTrialBtn.style.display = trialAvailable ? 'block' : 'none';
             this.upgradeBtn.style.display = isPro ? 'none' : 'block';
 
         } catch (error) {
@@ -172,7 +195,7 @@ class SettingsManager {
             this.showMessage('7-day free trial activated!', 'success');
         } catch (error) {
             console.error('Error starting trial:', error);
-            this.showMessage('Failed to start trial. Please try again.', 'error');
+            this.showMessage(error.message || 'Failed to start trial. Please try again.', 'error');
         }
     }
 
@@ -191,8 +214,8 @@ class SettingsManager {
                         <div class="license-tier">
                             <h4>Free</h4>
                             <ul>
-                                <li>10 downloads per day</li>
-                                <li>5 files per batch</li>
+                                <li>25 downloads per day</li>
+                                <li>3 files per batch</li>
                                 <li>Basic file types</li>
                             </ul>
                         </div>
@@ -221,15 +244,102 @@ class SettingsManager {
             document.body.removeChild(modal);
         });
 
-        modal.querySelector('#purchase-pro').addEventListener('click', () => {
-            this.showMessage('Payment integration coming soon! Please check back later.', 'info');
-            document.body.removeChild(modal);
+        modal.querySelector('#purchase-pro').addEventListener('click', async () => {
+            try {
+                const paymentResult = await this.licenseManager.processPayment('gumroad');
+                if (paymentResult.success) {
+                    document.body.removeChild(modal);
+                    this.showPaymentInstructions(paymentResult);
+                }
+            } catch (error) {
+                console.error('Payment error:', error);
+                this.showMessage('Payment failed. Please try again.', 'error');
+            }
         });
 
         // Close modal when clicking overlay
         modal.addEventListener('click', (e) => {
             if (e.target === modal) {
                 document.body.removeChild(modal);
+            }
+        });
+    }
+
+    showLicenseActivationError(modal, message) {
+        const errorEl = modal.querySelector('#license-activation-error');
+        if (!errorEl) {
+            this.showMessage(message, 'error');
+            return;
+        }
+        errorEl.textContent = message;
+        errorEl.style.display = 'block';
+    }
+
+    clearLicenseActivationError(modal) {
+        const errorEl = modal.querySelector('#license-activation-error');
+        if (errorEl) {
+            errorEl.textContent = '';
+            errorEl.style.display = 'none';
+        }
+    }
+
+    showPaymentInstructions(paymentResult) {
+        const modal = document.createElement('div');
+        modal.className = 'upgrade-modal-overlay';
+        modal.innerHTML = `
+            <div class="upgrade-modal">
+                <div class="modal-header">
+                    <h3>Complete Your Purchase</h3>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <div class="modal-content">
+                    <p>${paymentResult.message}</p>
+                    <div style="margin: 20px 0; padding: 15px; background: #f0f8ff; border-radius: 8px;">
+                        <h4>Step 1:</h4>
+                        <p>Complete your purchase on the Gumroad page that just opened.</p>
+                        <h4>Step 2:</h4>
+                        <p>You'll receive a license key via email after payment.</p>
+                        <h4>Step 3:</h4>
+                        <p>Enter your license key below to activate Pro features:</p>
+                        <input type="text" id="payment-license-key" placeholder="Enter license key..."
+                               style="width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px;">
+                        <p id="license-activation-error" style="display: none; color: #F44336; font-size: 12px; margin: 8px 0 0;"></p>
+                        <button id="activate-payment-license" class="btn upgrade-btn" style="width: 100%;">
+                            Activate Pro License
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+
+        const closeModal = () => document.body.removeChild(modal);
+        modal.querySelector('.modal-close').addEventListener('click', closeModal);
+        modal.addEventListener('click', (event) => {
+            if (event.target === modal) closeModal();
+        });
+
+        modal.querySelector('#activate-payment-license').addEventListener('click', async () => {
+            const licenseKey = modal.querySelector('#payment-license-key').value.trim();
+            this.clearLicenseActivationError(modal);
+
+            if (!licenseKey) {
+                this.showLicenseActivationError(modal, 'Please enter your license key.');
+                return;
+            }
+
+            try {
+                await this.licenseManager.activateLicense(licenseKey);
+                await this.updateLicenseUI();
+                closeModal();
+                this.showMessage('Pro license activated! Enjoy unlimited downloads!', 'success');
+            } catch (error) {
+                console.error('License activation error:', error);
+                this.showLicenseActivationError(
+                    modal,
+                    error.message || 'Invalid license key. Please check and try again.'
+                );
             }
         });
     }
@@ -248,6 +358,7 @@ class SettingsManager {
                     <p>Enter your license key to activate Pro features:</p>
                     <input type="text" id="license-key-input" placeholder="Enter license key..." 
                            style="width: 100%; padding: 10px; margin: 15px 0; border: 1px solid #ccc; border-radius: 4px;">
+                    <p id="license-activation-error" style="display: none; color: #F44336; font-size: 12px; margin: 0 0 12px;"></p>
                     <div class="modal-actions">
                         <button id="activate-key" class="btn upgrade-btn">Activate</button>
                         <button id="cancel-activation" class="btn secondary-btn">Cancel</button>
@@ -266,8 +377,10 @@ class SettingsManager {
 
         modal.querySelector('#activate-key').addEventListener('click', async () => {
             const licenseKey = modal.querySelector('#license-key-input').value.trim();
+            this.clearLicenseActivationError(modal);
+
             if (!licenseKey) {
-                this.showMessage('Please enter a license key.', 'error');
+                this.showLicenseActivationError(modal, 'Please enter a license key.');
                 return;
             }
 
@@ -278,7 +391,10 @@ class SettingsManager {
                 this.showMessage('License activated successfully!', 'success');
             } catch (error) {
                 console.error('License activation error:', error);
-                this.showMessage('Invalid license key. Please try again.', 'error');
+                this.showLicenseActivationError(
+                    modal,
+                    error.message || 'Invalid license key. Please try again.'
+                );
             }
         });
 
@@ -288,56 +404,161 @@ class SettingsManager {
         });
     }
 
-    showMessage(text, type = 'success') {
-        this.saveStatus.textContent = text;
-        this.saveStatus.className = `save-status ${type}`;
-        this.saveStatus.style.display = 'block';
+    getStorageApi() {
+        if (this.browserCompat?.api?.storage?.sync) {
+            return this.browserCompat.api.storage.sync;
+        }
+        if (typeof browser !== 'undefined' && browser.storage?.sync) {
+            return browser.storage.sync;
+        }
+        return chrome.storage.sync;
+    }
 
-        setTimeout(() => {
-            this.saveStatus.style.display = 'none';
-        }, 3000);
+    collectSettingsFromForm() {
+        return {
+            downloadFolder: this.downloadFolderInput.value.trim(),
+            createSubfolders: this.createSubfoldersCheck.checked,
+            avoidDuplicates: this.avoidDuplicatesCheck.checked,
+            preserveStructure: this.preserveStructureCheck.checked,
+            addTimestamp: this.addTimestampCheck.checked,
+            addWebsiteName: this.addWebsiteNameCheck.checked
+        };
+    }
+
+    applySettingsToForm(settings) {
+        this.downloadFolderInput.value = settings.downloadFolder || '';
+        this.createSubfoldersCheck.checked = Boolean(settings.createSubfolders);
+        this.avoidDuplicatesCheck.checked = settings.avoidDuplicates !== false;
+        this.preserveStructureCheck.checked = Boolean(settings.preserveStructure);
+        this.addTimestampCheck.checked = Boolean(settings.addTimestamp);
+        this.addWebsiteNameCheck.checked = Boolean(settings.addWebsiteName);
+    }
+
+    formatOnOff(value) {
+        return value ? 'On' : 'Off';
+    }
+
+    updateSettingsSummary(settings, savedAt = this.lastSavedAt) {
+        if (!this.settingsSummaryList) {
+            return;
+        }
+
+        const folderLabel = settings.downloadFolder || 'Default Downloads folder';
+        const rows = [
+            ['Download folder', folderLabel],
+            ['Subfolders by type', this.formatOnOff(settings.createSubfolders)],
+            ['Rename duplicates', this.formatOnOff(settings.avoidDuplicates)],
+            ['Preserve site structure', this.formatOnOff(settings.preserveStructure)],
+            ['Timestamp in filenames', this.formatOnOff(settings.addTimestamp)],
+            ['Website name prefix', this.formatOnOff(settings.addWebsiteName)]
+        ];
+
+        this.settingsSummaryList.innerHTML = rows.map(([label, value]) => {
+            const isToggle = value === 'On' || value === 'Off';
+            const valueClass = isToggle ? (value === 'On' ? 'on' : 'off') : '';
+            return `
+                <li>
+                    <span class="label">${label}</span>
+                    <span class="value ${valueClass}">${value}</span>
+                </li>
+            `;
+        }).join('');
+
+        if (this.settingsSummaryUpdated) {
+            this.settingsSummaryUpdated.textContent = savedAt
+                ? `Last saved: ${savedAt.toLocaleString()}`
+                : 'Not saved yet on this device';
+        }
+    }
+
+    showFeedback(message, type = 'success') {
+        if (!this.saveStatus) {
+            return;
+        }
+
+        if (this.statusHideTimer) {
+            clearTimeout(this.statusHideTimer);
+            this.statusHideTimer = null;
+        }
+
+        this.saveStatus.textContent = message;
+        this.saveStatus.className = `save-status visible ${type}`;
+
+        this.statusHideTimer = setTimeout(() => {
+            this.saveStatus.className = 'save-status';
+            this.saveStatus.textContent = '';
+            this.statusHideTimer = null;
+        }, 4000);
+    }
+
+    showSaveButtonFeedback() {
+        if (!this.saveSettingsBtn) {
+            return;
+        }
+
+        const originalText = 'Save Settings';
+        this.saveSettingsBtn.textContent = 'Saved!';
+        this.saveSettingsBtn.classList.add('saved');
+        this.saveSettingsBtn.disabled = true;
+
+        if (this.saveButtonResetTimer) {
+            clearTimeout(this.saveButtonResetTimer);
+        }
+
+        this.saveButtonResetTimer = setTimeout(() => {
+            this.saveSettingsBtn.textContent = originalText;
+            this.saveSettingsBtn.classList.remove('saved');
+            this.saveSettingsBtn.disabled = false;
+            this.saveButtonResetTimer = null;
+        }, 2000);
+    }
+
+    showMessage(text, type = 'success') {
+        this.showFeedback(text, type);
     }
 
     async loadSettings() {
         try {
-            const stored = await chrome.storage.sync.get(this.defaultSettings);
-
-            // Update input values
-            this.downloadFolderInput.value = stored.downloadFolder || '';
-            this.createSubfoldersCheck.checked = stored.createSubfolders;
-            this.avoidDuplicatesCheck.checked = stored.avoidDuplicates;
-            this.preserveStructureCheck.checked = stored.preserveStructure;
-            this.addTimestampCheck.checked = stored.addTimestamp;
-            this.addWebsiteNameCheck.checked = stored.addWebsiteName;
-
+            const storage = this.getStorageApi();
+            const stored = await storage.get({
+                ...this.defaultSettings,
+                settingsUpdatedAt: null
+            });
+            this.applySettingsToForm(stored);
             this.updateFolderDisplay();
+
+            if (stored.settingsUpdatedAt) {
+                this.lastSavedAt = new Date(stored.settingsUpdatedAt);
+            }
+            this.updateSettingsSummary(stored, this.lastSavedAt);
 
             console.log('Settings loaded:', stored);
         } catch (error) {
             console.error('Error loading settings:', error);
-            this.showStatus('Error loading settings', 'error');
+            this.showFeedback('Error loading settings', 'error');
         }
     }
 
     async saveSettings() {
         try {
-            const settings = {
-                downloadFolder: this.downloadFolderInput.value.trim(),
-                createSubfolders: this.createSubfoldersCheck.checked,
-                avoidDuplicates: this.avoidDuplicatesCheck.checked,
-                preserveStructure: this.preserveStructureCheck.checked,
-                addTimestamp: this.addTimestampCheck.checked,
-                addWebsiteName: this.addWebsiteNameCheck.checked
-            };
+            const settings = this.collectSettingsFromForm();
+            this.lastSavedAt = new Date();
+            const storage = this.getStorageApi();
+            await storage.set({
+                ...settings,
+                settingsUpdatedAt: this.lastSavedAt.toISOString()
+            });
 
-            await chrome.storage.sync.set(settings);
+            this.applySettingsToForm(settings);
             this.updateFolderDisplay();
-            this.showStatus('Settings saved successfully!', 'success');
+            this.updateSettingsSummary(settings, this.lastSavedAt);
+            this.showSaveButtonFeedback();
+            this.showFeedback('Settings saved successfully!', 'success');
 
             console.log('Settings saved:', settings);
         } catch (error) {
             console.error('Error saving settings:', error);
-            this.showStatus('Error saving settings', 'error');
+            this.showFeedback('Error saving settings. Please try again.', 'error');
         }
     }
 
@@ -349,27 +570,11 @@ class SettingsManager {
 
     updateFolderDisplay() {
         const folderValue = this.downloadFolderInput.value.trim();
-
-        if (folderValue) {
-            this.currentFolderPath.textContent = folderValue;
-            this.currentFolderDisplay.style.display = 'block';
-        } else {
-            this.currentFolderPath.textContent = 'Default Downloads folder';
-            this.currentFolderDisplay.style.display = 'block';
-        }
+        this.currentFolderPath.textContent = folderValue || 'Default Downloads folder';
     }
 
     showStatus(message, type) {
-        this.saveStatus.textContent = message;
-        this.saveStatus.className = `save-status ${type}`;
-
-        // Hide status after 3 seconds
-        setTimeout(() => {
-            this.saveStatus.style.display = 'none';
-            setTimeout(() => {
-                this.saveStatus.className = 'save-status';
-            }, 300);
-        }, 3000);
+        this.showFeedback(message, type);
     }
 }
 

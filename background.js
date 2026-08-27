@@ -2,11 +2,11 @@
 // Handles downloads and communication between popup and content scripts
 // Cross-browser compatible for Chrome and Firefox
 
-// Import browser compatibility layer
+// Import browser compatibility layer and licensing
 try {
-    importScripts('browser-compatibility.js');
+    importScripts('browser-compatibility.js', 'license.js');
 } catch (error) {
-    console.error('Could not import browser compatibility layer:', error);
+    console.error('Could not import extension dependencies:', error);
 }
 
 // Initialize browser compatibility
@@ -24,12 +24,36 @@ try {
     };
 }
 
+// The background worker owns quota enforcement: the popup can be closed at any
+// moment, so counting downloads there would let free users exceed their limit.
+function getLicenseManager() {
+    if (typeof LicenseManager === 'undefined') {
+        return null;
+    }
+    try {
+        return new LicenseManager();
+    } catch (error) {
+        console.error('Could not create LicenseManager:', error);
+        return null;
+    }
+}
+
 // Keep track of download progress for UI updates
+const MAX_TRACKED_DOWNLOADS = 200;
 let downloadProgress = new Map();
+
+function trackDownloadProgress(trackerId, entry) {
+    downloadProgress.set(trackerId, entry);
+    while (downloadProgress.size > MAX_TRACKED_DOWNLOADS) {
+        const oldestKey = downloadProgress.keys().next().value;
+        downloadProgress.delete(oldestKey);
+    }
+}
 const DOWNLOAD_SESSIONS_KEY = 'downloadSessionsByTab';
 const SCAN_STATES_KEY = 'scanStatesByTab';
 const chromeDownloadListeners = new Map();
 const batchRunningByTab = new Set();
+const DOWNLOAD_STALL_TIMEOUT_MS = 120000;
 
 class DownloadCancelledError extends Error {
     constructor() {
@@ -194,15 +218,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             handleClearDownloadSession(message.tabId, message.onlyIfFinished, sendResponse);
             return true;
 
-        case 'markSessionLicenseRecorded':
-            getDownloadSessionState(message.tabId).then(async (session) => {
-                if (session) {
-                    await setDownloadSessionState(message.tabId, { licenseRecorded: true });
-                }
-                sendResponse({ success: true });
-            });
-            return true;
-
         case 'pauseDownload':
             handlePauseDownload(message.tabId, sendResponse);
             return true;
@@ -238,31 +253,20 @@ async function handleScanPage(tabId, sendResponse) {
     }
 
     try {
-        // Inject content script to scan for resources
         const results = await chrome.scripting.executeScript({
             target: { tabId: tabId },
             function: scanPageForResources
         });
 
-        console.log('Scan results:', results);
+        const resources = results?.[0]?.result || [];
+        console.log(`Found ${resources.length} resources from base scan`);
 
-        if (results && results[0] && results[0].result) {
-            const resources = results[0].result;
-            console.log(`Found ${resources.length} resources`);
+        sendResponse({
+            success: true,
+            resources
+        });
 
-            sendResponse({
-                success: true,
-                resources: resources
-            });
-
-            // Stop keep-alive after scan completes
-            setTimeout(stopKeepAlive, 2000);
-        } else {
-            sendResponse({
-                success: false,
-                error: 'No results returned from page scan'
-            });
-        }
+        setTimeout(stopKeepAlive, 2000);
     } catch (error) {
         console.error('Error scanning page:', error);
         sendResponse({
@@ -392,6 +396,45 @@ function scanPageForResources() {
         return '';
     }
 
+    function decodeJsEscapedUrl(url) {
+        return String(url)
+            .replace(/\\u0026/g, '&')
+            .replace(/\\\//g, '/')
+            .replace(/\\"/g, '"')
+            .replace(/&amp;/g, '&');
+    }
+
+    // YouTube/Vimeo watch pages are HTML — not downloadable media files.
+    function isStreamingPlatformPage(url) {
+        try {
+            const urlObj = new URL(url);
+            const host = urlObj.hostname.replace(/^www\./, '').replace(/^m\./, '');
+
+            if (/^(youtube\.com|youtu\.be)$/.test(host)) {
+                if (host === 'youtu.be') {
+                    return urlObj.pathname.length > 1;
+                }
+                return /\/watch|\/embed|\/shorts|\/live|\/clip/.test(`${urlObj.pathname}${urlObj.search}`);
+            }
+
+            if (host === 'vimeo.com') {
+                return /^\/(?:\d+|video\/\d+)/.test(urlObj.pathname);
+            }
+
+            if (/^(dailymotion\.com|dai\.ly)$/.test(host)) {
+                return /\/video\/|dai\.ly\//.test(`${host}${urlObj.pathname}`);
+            }
+
+            if (host.endsWith('twitch.tv')) {
+                return /\/videos\/|\/clip\//.test(urlObj.pathname);
+            }
+
+            return false;
+        } catch {
+            return false;
+        }
+    }
+
     function isGitIrVideoSlug(value) {
         const text = (value || '').toLowerCase();
         if (!text) {
@@ -455,10 +498,14 @@ function scanPageForResources() {
             return true;
         }
 
+        if (isStreamingPlatformPage(url)) {
+            return false;
+        }
+
         if (/\/(video|videos|stream|streams|media|watch|play|hls|dash)\//i.test(url)) {
             return true;
         }
-        if (/aparat\.com|youtube\.com|youtu\.be|vimeo\.com|dailymotion\.com|wistia\.|brightcove|cloudflarestream|videodelivery\.net|stream\.cloudflare/i.test(urlLower)) {
+        if (/aparat\.com|vimeocdn\.com|cloudflarestream|videodelivery\.net|stream\.cloudflare/i.test(urlLower)) {
             return true;
         }
         if (/[?&](format|type|mime)=video/i.test(urlLower)) {
@@ -596,12 +643,7 @@ function scanPageForResources() {
 
             // Handle special cases only for platforms that don't have real filenames
             if (!filename || filename === 'download' || filename.length < 3) {
-                if (url.includes('youtube.com') || url.includes('youtu.be')) {
-                    const videoIdMatch = url.match(/(?:v=|embed\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-                    if (videoIdMatch) {
-                        filename = `youtube_${videoIdMatch[1]}.mp4`;
-                    }
-                } else if (url.includes('vimeo.com')) {
+                if (url.includes('vimeo.com')) {
                     const videoIdMatch = url.match(/vimeo\.com\/(?:video\/)?(\d+)/);
                     if (videoIdMatch) {
                         filename = `vimeo_${videoIdMatch[1]}.mp4`;
@@ -665,6 +707,10 @@ function scanPageForResources() {
             const linkText = link.textContent?.trim() || link.title || 'Link';
 
             if (isGenericNavigationLink(url, linkText, link)) {
+                return;
+            }
+
+            if (isStreamingPlatformPage(url)) {
                 return;
             }
 
@@ -799,88 +845,34 @@ function scanPageForResources() {
         });
     });
 
-    // Scan for YouTube videos
-    function scanYouTubeVideos() {
-        // YouTube embedded iframes
-        document.querySelectorAll('iframe[src*="youtube.com"], iframe[src*="youtu.be"]').forEach(iframe => {
-            const src = iframe.src;
-            if (src) {
-                // Extract video ID from YouTube URL
-                const videoIdMatch = src.match(/(?:youtube\.com\/embed\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-                if (videoIdMatch) {
-                    const videoId = videoIdMatch[1];
-                    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-                    resources.add(JSON.stringify({
-                        url: videoUrl,
-                        type: 'video',
-                        filename: `youtube_video_${videoId}.mp4`,
-                        element: 'youtube-embed',
-                        text: iframe.title || 'YouTube Video',
-                        extension: 'mp4'
-                    }));
-                }
+    function scanVimeoDirectStreams() {
+        document.querySelectorAll('video source[src*="vimeocdn"], video[src*="vimeocdn"]').forEach((el, index) => {
+            const src = el.src || el.getAttribute('src');
+            if (!src || !src.startsWith('http')) {
+                return;
             }
-        });
 
-        // YouTube player divs (for dynamic loading)
-        document.querySelectorAll('[data-video-id]').forEach(el => {
-            const videoId = el.getAttribute('data-video-id');
-            if (videoId && videoId.match(/^[a-zA-Z0-9_-]{11}$/)) {
-                const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-                resources.add(JSON.stringify({
-                    url: videoUrl,
-                    type: 'video',
-                    filename: `youtube_video_${videoId}.mp4`,
-                    element: 'youtube-player',
-                    text: el.title || el.getAttribute('aria-label') || 'YouTube Video',
-                    extension: 'mp4'
-                }));
-            }
-        });
-    }
-
-    // Scan for Vimeo videos
-    function scanVimeoVideos() {
-        document.querySelectorAll('iframe[src*="vimeo.com"]').forEach(iframe => {
-            const src = iframe.src;
-            if (src) {
-                const videoIdMatch = src.match(/vimeo\.com\/(?:video\/)?(\d+)/);
-                if (videoIdMatch) {
-                    const videoId = videoIdMatch[1];
-                    const videoUrl = `https://vimeo.com/${videoId}`;
-                    resources.add(JSON.stringify({
-                        url: videoUrl,
-                        type: 'video',
-                        filename: `vimeo_video_${videoId}.mp4`,
-                        element: 'vimeo-embed',
-                        text: iframe.title || 'Vimeo Video',
-                        extension: 'mp4'
-                    }));
-                }
-            }
-        });
-    }
-
-    // Scan for Twitch streams/videos
-    function scanTwitchContent() {
-        document.querySelectorAll('iframe[src*="twitch.tv"]').forEach(iframe => {
-            const src = iframe.src;
-            if (src) {
-                resources.add(JSON.stringify({
-                    url: src,
-                    type: 'video',
-                    filename: 'twitch_stream.mp4',
-                    element: 'twitch-embed',
-                    text: iframe.title || 'Twitch Stream',
-                    extension: 'mp4'
-                }));
-            }
+            resources.add(JSON.stringify({
+                url: src,
+                type: 'video',
+                filename: generateFilename(src, `Vimeo stream ${index + 1}`),
+                element: 'vimeo-stream',
+                text: `Vimeo stream ${index + 1}`,
+                extension: getFileExtension(src) || 'mp4',
+                downloadMethod: 'fetch-referer',
+                referer: 'https://vimeo.com/'
+            }));
         });
     }
 
     // Scan for HTML5 video/audio blob URLs
     function scanBlobUrls() {
-        // Find all media elements with blob URLs
+        // YouTube's blob src is a MediaSource handle that cannot be read back,
+        // so listing it would only produce a guaranteed failure.
+        if (/(^|\.)(youtube\.com|youtu\.be)$/i.test(location.hostname)) {
+            return;
+        }
+
         document.querySelectorAll('video, audio').forEach(media => {
             if (media.src && media.src.startsWith('blob:')) {
                 resources.add(JSON.stringify({
@@ -889,7 +881,8 @@ function scanPageForResources() {
                     filename: `${media.tagName.toLowerCase()}_${Date.now()}.${media.tagName === 'VIDEO' ? 'mp4' : 'mp3'}`,
                     element: 'blob-media',
                     text: media.title || `${media.tagName} (blob)`,
-                    extension: media.tagName === 'VIDEO' ? 'mp4' : 'mp3'
+                    extension: media.tagName === 'VIDEO' ? 'mp4' : 'mp3',
+                    downloadMethod: 'blob'
                 }));
             }
         });
@@ -1037,11 +1030,16 @@ function scanPageForResources() {
                 });
             });
         });
-    }    // Scan for streaming manifests (HLS, DASH)
+    }    // Scan for streaming manifests (HLS, DASH) using attribute selectors so we
+    // never have to walk every element on the page.
     function scanStreamingManifests() {
-        // Look for .m3u8 (HLS) and .mpd (DASH) files
-        document.querySelectorAll('*').forEach(el => {
-            ['src', 'data-src', 'data-url', 'href'].forEach(attr => {
+        const manifestAttributes = ['src', 'data-src', 'data-url', 'href'];
+        const selector = manifestAttributes
+            .flatMap(attr => [`[${attr}*=".m3u8"]`, `[${attr}*=".mpd"]`])
+            .join(', ');
+
+        document.querySelectorAll(selector).forEach(el => {
+            manifestAttributes.forEach(attr => {
                 const url = el.getAttribute(attr);
                 if (url && (url.includes('.m3u8') || url.includes('.mpd'))) {
                     const resolvedUrl = resolveUrl(url);
@@ -1062,9 +1060,7 @@ function scanPageForResources() {
     }
 
     // Execute all scanning functions
-    scanYouTubeVideos();
-    scanVimeoVideos();
-    scanTwitchContent();
+    scanVimeoDirectStreams();
     scanBlobUrls();
     scanEmbeddedPlayers();
     scanStreamingManifests();
@@ -1095,8 +1091,13 @@ function scanPageForResources() {
         }
     });
 
-    // Scan for background images in CSS
-    document.querySelectorAll('*').forEach(element => {
+    // Scan for background images in CSS. getComputedStyle forces layout work per
+    // element, so cap how many we inspect to keep huge pages responsive.
+    const MAX_BACKGROUND_IMAGE_ELEMENTS = 3000;
+    const backgroundCandidates = Array.from(document.querySelectorAll('body *'))
+        .slice(0, MAX_BACKGROUND_IMAGE_ELEMENTS);
+
+    backgroundCandidates.forEach(element => {
         const style = window.getComputedStyle(element);
         const backgroundImage = style.backgroundImage;
 
@@ -1160,6 +1161,19 @@ async function handleDownloadResources(tabId, resources, sendResponse) {
             return;
         }
 
+        const licenseManager = getLicenseManager();
+        if (licenseManager) {
+            const permission = await licenseManager.canDownload(resources.length);
+            if (!permission.allowed) {
+                sendResponse({
+                    success: false,
+                    error: permission.message || 'Download limit reached. Upgrade to Pro for unlimited downloads.',
+                    limit: permission
+                });
+                return;
+            }
+        }
+
         await setDownloadSessionState(tabId, {
             status: 'downloading',
             total: resources.length,
@@ -1173,7 +1187,7 @@ async function handleDownloadResources(tabId, resources, sendResponse) {
             message: `Starting download of ${resources.length} files...`,
             startedAt: Date.now(),
             finishedAt: null,
-            licenseRecorded: false
+            licenseRecorded: true
         });
 
         sendResponse({ success: true, started: true, total: resources.length });
@@ -1384,6 +1398,7 @@ async function runDownloadBatchFromSession(tabId) {
             try {
                 await downloadResourceAndWait(tabId, resource);
                 completed++;
+                await recordDownloadUsage(1);
             } catch (error) {
                 if (error instanceof DownloadCancelledError) {
                     break;
@@ -1427,7 +1442,7 @@ async function runDownloadBatchFromSession(tabId) {
             activeChromeDownloadId: null,
             message: `Complete! ${completed} successful, ${failed} failed out of ${total}`,
             finishedAt: Date.now(),
-            licenseRecorded: false
+            licenseRecorded: true
         });
     } finally {
         setBatchRunning(tabId, false);
@@ -1435,14 +1450,90 @@ async function runDownloadBatchFromSession(tabId) {
     }
 }
 
-async function runDownloadBatch(tabId, resources) {
-    await setDownloadSessionState(tabId, { resources, currentIndex: 0 });
-    return runDownloadBatchFromSession(tabId);
+async function recordDownloadUsage(fileCount) {
+    const licenseManager = getLicenseManager();
+    if (!licenseManager) {
+        return;
+    }
+    try {
+        await licenseManager.recordDownload(fileCount);
+    } catch (error) {
+        console.error('Could not record download usage:', error);
+    }
 }
 
-async function downloadResourceAndWait(tabId, resource) {
-    const settings = await getDownloadSettings();
-    const finalFilename = await generateDownloadFilename(resource, settings);
+function isBlockedPlatformPageUrl(url) {
+    try {
+        const urlObj = new URL(url);
+        const host = urlObj.hostname.replace(/^www\./, '').replace(/^m\./, '');
+
+        if (/^(youtube\.com|youtu\.be)$/.test(host)) {
+            if (host === 'youtu.be') {
+                return urlObj.pathname.length > 1;
+            }
+            return /\/watch|\/embed|\/shorts|\/live|\/clip/.test(`${urlObj.pathname}${urlObj.search}`);
+        }
+
+        if (host === 'vimeo.com') {
+            return /^\/(?:\d+|video\/\d+)/.test(urlObj.pathname);
+        }
+
+        return false;
+    } catch {
+        return false;
+    }
+}
+
+async function readBlobUrlFromTab(tabId, blobUrl) {
+    const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async (pageBlobUrl) => {
+            const response = await fetch(pageBlobUrl);
+            if (!response.ok) {
+                throw new Error(`Could not read blob stream (${response.status})`);
+            }
+
+            const blob = await response.blob();
+            if (!blob.size) {
+                throw new Error('Blob stream is empty');
+            }
+
+            if (/text\/html/i.test(blob.type)) {
+                throw new Error('Blob stream is not a media file');
+            }
+
+            const buffer = await blob.arrayBuffer();
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            const chunkSize = 0x8000;
+
+            for (let i = 0; i < bytes.length; i += chunkSize) {
+                binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+            }
+
+            return {
+                base64: btoa(binary),
+                mime: blob.type || 'video/mp4'
+            };
+        },
+        args: [blobUrl]
+    });
+
+    const payload = results?.[0]?.result;
+    if (!payload?.base64) {
+        throw new Error('Could not capture blob stream from the page');
+    }
+
+    const binary = atob(payload.base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+
+    return URL.createObjectURL(new Blob([bytes], { type: payload.mime || 'video/mp4' }));
+}
+
+async function waitForChromeDownload(tabId, finalFilename, settings, downloadUrl) {
     const session = await getDownloadSessionState(tabId);
     if (session?.status === 'cancelled') {
         throw new DownloadCancelledError();
@@ -1453,7 +1544,7 @@ async function downloadResourceAndWait(tabId, resource) {
 
     return new Promise((resolve, reject) => {
         chrome.downloads.download({
-            url: resource.url,
+            url: downloadUrl,
             filename: finalFilename,
             conflictAction: settings.avoidDuplicates ? 'uniquify' : 'overwrite'
         }, (chromeDownloadId) => {
@@ -1465,23 +1556,63 @@ async function downloadResourceAndWait(tabId, resource) {
             setDownloadSessionState(tabId, { activeChromeDownloadId: chromeDownloadId });
 
             const trackerId = `download_${Date.now()}_${Math.random()}`;
-            downloadProgress.set(trackerId, {
+            trackDownloadProgress(trackerId, {
                 status: 'downloading',
                 filename: finalFilename,
                 chromeDownloadId,
                 tabId
             });
 
+            let settled = false;
+            let stallTimer = null;
+
+            const finish = (outcome, valueOrError) => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+
+                clearTimeout(stallTimer);
+                chrome.downloads.onChanged.removeListener(listener);
+                chromeDownloadListeners.delete(chromeDownloadId);
+                setDownloadSessionState(tabId, { activeChromeDownloadId: null });
+
+                if (outcome === 'resolve') {
+                    trackDownloadProgress(trackerId, { status: 'completed', filename: finalFilename, chromeDownloadId });
+                    resolve(valueOrError);
+                } else {
+                    trackDownloadProgress(trackerId, { status: 'failed', filename: finalFilename, chromeDownloadId });
+                    reject(valueOrError);
+                }
+            };
+
+            const armStallTimer = () => {
+                clearTimeout(stallTimer);
+                stallTimer = setTimeout(async () => {
+                    const currentSession = await getDownloadSessionState(tabId);
+                    if (currentSession?.status === 'paused') {
+                        armStallTimer();
+                        return;
+                    }
+                    try {
+                        await chrome.downloads.cancel(chromeDownloadId);
+                    } catch (error) {
+                        console.warn('Could not cancel stalled download:', error);
+                    }
+                    finish('reject', new Error('Download timed out'));
+                }, DOWNLOAD_STALL_TIMEOUT_MS);
+            };
+
             const listener = (downloadDelta) => {
                 if (downloadDelta.id !== chromeDownloadId) {
                     return;
                 }
 
+                armStallTimer();
+
                 getDownloadSessionState(tabId).then((currentSession) => {
                     if (currentSession?.status === 'cancelled') {
-                        chrome.downloads.onChanged.removeListener(listener);
-                        chromeDownloadListeners.delete(chromeDownloadId);
-                        reject(new DownloadCancelledError());
+                        finish('reject', new DownloadCancelledError());
                     }
                 });
 
@@ -1496,36 +1627,56 @@ async function downloadResourceAndWait(tabId, resource) {
                 }
 
                 if (downloadDelta.state?.current === 'complete') {
-                    chrome.downloads.onChanged.removeListener(listener);
-                    chromeDownloadListeners.delete(chromeDownloadId);
-                    downloadProgress.set(trackerId, { status: 'completed', filename: finalFilename, chromeDownloadId });
-                    setDownloadSessionState(tabId, { activeChromeDownloadId: null });
-                    resolve(chromeDownloadId);
+                    finish('resolve', chromeDownloadId);
                 } else if (downloadDelta.state?.current === 'interrupted') {
-                    chrome.downloads.onChanged.removeListener(listener);
-                    chromeDownloadListeners.delete(chromeDownloadId);
-                    downloadProgress.set(trackerId, { status: 'failed', filename: finalFilename, chromeDownloadId });
-                    setDownloadSessionState(tabId, { activeChromeDownloadId: null });
-
                     getDownloadSessionState(tabId).then((currentSession) => {
-                        if (currentSession?.status === 'cancelled') {
-                            reject(new DownloadCancelledError());
-                        } else {
-                            reject(new Error('Download interrupted'));
-                        }
+                        finish(
+                            'reject',
+                            currentSession?.status === 'cancelled'
+                                ? new DownloadCancelledError()
+                                : new Error('Download interrupted')
+                        );
                     });
                 }
             };
 
             chrome.downloads.onChanged.addListener(listener);
             chromeDownloadListeners.set(chromeDownloadId, { listener, tabId: Number(tabId) });
+            armStallTimer();
         });
     });
 }
 
-// Legacy single-resource helper (kept for compatibility)
-async function downloadResource(resource) {
-    return downloadResourceAndWait(resource);
+async function downloadResourceAndWait(tabId, resource) {
+    const settings = await getDownloadSettings();
+    const finalFilename = await generateDownloadFilename(resource, settings);
+    const session = await getDownloadSessionState(tabId);
+    if (session?.status === 'cancelled') {
+        throw new DownloadCancelledError();
+    }
+
+    if (isBlockedPlatformPageUrl(resource.url)) {
+        throw new Error(
+            'This link is a video platform\'s watch page, not a video file, so there is nothing to save.'
+        );
+    }
+
+    let objectUrlToRevoke = null;
+
+    try {
+        let downloadUrl = resource.url;
+
+        if (resource.url.startsWith('blob:')) {
+            downloadUrl = await readBlobUrlFromTab(tabId, resource.url);
+            objectUrlToRevoke = downloadUrl;
+        }
+
+        return await waitForChromeDownload(tabId, finalFilename, settings, downloadUrl);
+    } finally {
+        if (objectUrlToRevoke) {
+            setTimeout(() => URL.revokeObjectURL(objectUrlToRevoke), 60000);
+        }
+    }
 }
 
 // Get download settings from storage
@@ -1625,8 +1776,16 @@ async function generateDownloadFilename(resource, settings) {
 
     // Combine folder and filename
     if (folderPath) {
-        // Clean folder path
-        folderPath = folderPath.replace(/[<>:"/\\|?*]/g, '_');
+        // Sanitize each segment separately; stripping the separators here would
+        // collapse the whole hierarchy into one long folder name.
+        folderPath = folderPath
+            .split('/')
+            .map((segment) => segment.replace(/[<>:"\\|?*]/g, '_').trim())
+            .filter(Boolean)
+            .join('/');
+    }
+
+    if (folderPath) {
         return `${folderPath}/${filename}`;
     }
 

@@ -35,30 +35,7 @@
     },
     
     "options_page": "options.html",
+
     
-    "content_scripts": [{
-        "matches": ["<all_urls>"],
-        "js": ["content.js"],
-        "run_at": "document_idle"
-    }],
-    
-    "web_accessible_resources": [{
-        "resources": ["content.js", "license.js"],
-        "matches": ["<all_urls>"]
-    }],
-    
-    "browser_specific_settings": {
-        "gecko": {
-            "id": "webpage-resource-downloader@yourdomain.com",
-            "strict_min_version": "109.0"
-        }
-    },
-    
-    "cross_origin_embedder_policy": {
-        "value": "require-corp"
-    },
-    
-    "cross_origin_opener_policy": {
-        "value": "same-origin"
-    }
+    "minimum_chrome_version": "111"
 }

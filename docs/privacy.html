@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — Webpage Resource Downloader</title>
+<meta name="description" content="Privacy policy for the Webpage Resource Downloader Chrome extension.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+
+  :root {
+    --ink:      #111A1E;
+    --ink-soft: #3D4C52;
+    --muted:    #6B7C83;
+    --paper:    #FBFAF7;
+    --card:     #FFFFFF;
+    --rule:     #E2E3DD;
+    --accent:   #0E6E62;
+    --accent-soft: #E3F0ED;
+
+    --display: 'Fraunces', Georgia, 'Times New Roman', serif;
+    --body: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink:      #ECEFEC;
+      --ink-soft: #BFC8C6;
+      --muted:    #8A9A9B;
+      --paper:    #0E1416;
+      --card:     #161E21;
+      --rule:     #263134;
+      --accent:   #57BFAC;
+      --accent-soft: #122C29;
+    }
+  }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.68;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 42rem;
+    margin: 0 auto;
+    padding: 3.5rem 1.5rem 5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 2.5rem;
+  }
+
+  .back {
+    font-family: var(--mono);
+    font-size: .78rem;
+    letter-spacing: .05em;
+    text-decoration: none;
+    color: var(--accent);
+  }
+  .back:hover { text-decoration: underline; }
+
+  header { display: flex; flex-direction: column; gap: .6rem; }
+  h1 {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: clamp(1.9rem, 5.5vw, 2.6rem);
+    line-height: 1.1;
+    letter-spacing: -.02em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .updated {
+    font-family: var(--mono);
+    font-size: .78rem;
+    color: var(--muted);
+  }
+
+  section { display: flex; flex-direction: column; gap: .8rem; }
+  h2 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.25rem;
+    letter-spacing: -.01em;
+    margin: 0;
+    padding-bottom: .45rem;
+    border-bottom: 1px solid var(--rule);
+  }
+  p { margin: 0; color: var(--ink-soft); }
+  ul { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: .4rem; }
+  li { color: var(--ink-soft); }
+  strong { color: var(--ink); font-weight: 600; }
+  code {
+    font-family: var(--mono);
+    font-size: .86em;
+    background: var(--accent-soft);
+    padding: .1em .35em;
+    border-radius: 3px;
+    word-break: break-all;
+  }
+  a { color: var(--accent); }
+  a:focus-visible, .back:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .callout {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.15rem;
+    border-radius: 0 5px 5px 0;
+    font-size: .96rem;
+  }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 1.25rem;
+    font-size: .88rem;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <a class="back" href="index.html">← Webpage Resource Downloader</a>
+
+  <header>
+    <h1>Privacy Policy</h1>
+    <span class="updated">Last updated: August 27, 2026</span>
+  </header>
+
+  <section>
+    <h2>What we do not collect</h2>
+    <p>The extension does not collect, store, or transmit any of the following:</p>
+    <ul>
+      <li>Personal information such as your name, email address, or location</li>
+      <li>Your browsing history or the sites you visit</li>
+      <li>The contents of files you download, or a record of what you downloaded</li>
+      <li>Behavioural or usage analytics</li>
+      <li>Cookies or tracking identifiers</li>
+      <li>Login credentials or passwords</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>What the extension accesses</h2>
+    <ul>
+      <li><strong>The current tab's content</strong> — read only when you click "Scan Page", in order to find downloadable files on it.</li>
+      <li><strong>The download API</strong> — used to save the files you select to your computer.</li>
+      <li><strong>Local storage</strong> — holds your settings, in-progress download state, and license record. It stays in your browser.</li>
+    </ul>
+    <p>Nothing runs and no page is read until you click "Scan Page".</p>
+  </section>
+
+  <section>
+    <h2>Third-party services</h2>
+    <p>The extension uses no analytics, tracking, or advertising services.</p>
+    <div class="callout">
+      The single third party it ever contacts is <strong>Gumroad</strong>, and only if you buy a Pro license. When you activate a license key — and periodically afterwards, to confirm the subscription is still active — the extension sends that key to Gumroad's license verification API at <code>https://api.gumroad.com/v2/licenses/verify</code>.
+      <br><br>
+      Nothing else is sent: no email address, no browsing data, and no list of what you downloaded. Free and trial users never trigger this request. Purchases made on Gumroad's own checkout page are covered by <a href="https://gumroad.com/privacy" rel="noopener">Gumroad's privacy policy</a>.
+    </div>
+  </section>
+
+  <section>
+    <h2>Data security</h2>
+    <p>Scanning, filtering, and file naming all happen locally on your device. The only network requests the extension makes are the downloads themselves, which go directly to the original file URLs, and the Gumroad license check described above.</p>
+  </section>
+
+  <section>
+    <h2>Permissions</h2>
+    <ul>
+      <li><strong>downloads</strong> — saves the files you select to your computer.</li>
+      <li><strong>activeTab</strong> — identifies the tab you are acting on.</li>
+      <li><strong>scripting</strong> — runs the scanning function in the page when you click "Scan Page".</li>
+      <li><strong>storage</strong> — keeps your settings and license record in the browser.</li>
+      <li><strong>Access to all sites</strong> — you choose which pages to scan, so the list of sites cannot be known in advance.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Changes to this policy</h2>
+    <p>This policy may be updated from time to time. Any change will be published on this page with a revised date above.</p>
+  </section>
+
+  <section>
+    <h2>Contact</h2>
+    <!-- TODO: replace with your real support address -->
+    <p>Questions about this policy? Email <a href="mailto:SUPPORT@EXAMPLE.COM">SUPPORT@EXAMPLE.COM</a>.</p>
+  </section>
+
+  <footer>
+    By using this extension you acknowledge that you have read and understood this privacy policy.
+  </footer>
+
+</div>
+</body>
+</html>

@@ -1,6 +1,6 @@
 # Privacy Policy for Webpage Resource Downloader
 
-**Last updated: November 25, 2025**
+**Last updated: August 27, 2026**
 
 ## Data Collection and Usage
 
@@ -37,10 +37,22 @@ The Webpage Resource Downloader Chrome Extension operates with the following pri
 - **host permissions**: Access any website for resource scanning
 
 ### Third-Party Services
-This extension does not use any third-party analytics, tracking, or data collection services.
+This extension uses no analytics, tracking, or advertising services.
+
+The single third party it contacts is **Gumroad**, and only if you buy a Pro
+license. When you activate a license key, and periodically afterwards to confirm
+the subscription is still active, the extension sends that license key to
+Gumroad's license-verification API (`https://api.gumroad.com/v2/licenses/verify`).
+Nothing else is sent: no email address, no browsing data, no list of what you
+downloaded. Free and trial users never trigger this request. Purchases made on
+Gumroad's own checkout page are covered by
+[Gumroad's privacy policy](https://gumroad.com/privacy).
 
 ### Data Security
-All operations are performed locally on your device. No data leaves your computer except for the actual download requests to the original resource URLs.
+Scanning, filtering, and file naming all happen locally on your device. The only
+network requests the extension makes are the downloads themselves, which go
+directly to the original resource URLs, and the Gumroad license check described
+above.
 
 ### Changes to This Policy
 We may update this privacy policy from time to time. Any changes will be reflected in the extension listing.
