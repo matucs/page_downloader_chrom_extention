@@ -235,6 +235,11 @@ async function testManifestHygiene() {
     check('youtube_capture.js file deleted', !fs.existsSync(path.join(root, 'youtube_capture.js')));
     check('management permission dropped (getSelf does not need it)',
         !manifest.permissions.includes('management'));
+    // activeTab + a tabId-scoped executeScript covers scanning, and
+    // chrome.downloads needs no host permission, so <all_urls> is not required.
+    check('no broad host permissions requested', !manifest.host_permissions);
+    check('activeTab present (it replaces the host permission)',
+        manifest.permissions.includes('activeTab'));
     check('service worker still registered', manifest.background?.service_worker === 'background.js');
     check('downloads permission present', manifest.permissions.includes('downloads'));
     check('content.js file deleted', !fs.existsSync(path.join(root, 'content.js')));

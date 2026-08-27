@@ -31,10 +31,9 @@ The Webpage Resource Downloader Chrome Extension operates with the following pri
 
 ### Permissions Explained
 - **downloads**: Required to save files to your computer
-- **activeTab**: Access current webpage content only when scanning
 - **scripting**: Inject scanning scripts into webpages
 - **storage**: Store extension preferences locally
-- **host permissions**: Access any website for resource scanning
+- **activeTab**: Grants temporary access to the one tab you are on, only when you click Scan Page
 
 ### Third-Party Services
 This extension uses no analytics, tracking, or advertising services.
